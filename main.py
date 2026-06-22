@@ -13,8 +13,9 @@ except ImportError:
 
 __revit__: str
 
-# Grid spacing in feet (approximately 0.1m = ~0.328 feet)
-GRID_SPACING = 0.328 * 10
+# Base grid spacing in feet (approximately 0.5m = ~1.64 feet)
+# This serves as the finest grid spacing - coarser grids will be multiples of this
+BASE_GRID_SPACING = 0.328 * 20
 
 # Minimum distance from boundary to avoid edge issues (in feet, ~10cm)
 BOUNDARY_INSET = 0.328
@@ -23,6 +24,18 @@ BOUNDARY_INSET = 0.328
 # Heights representing less than 7.6% of the room area are filtered out
 THRESHOLD = 0.076
 
+# Convergence threshold for adaptive grid refinement
+# If height ratios differ by less than this, consider converged
+CONVERGENCE_THRESHOLD = 0.02  # 2% difference allowed
+
+# Maximum grid refinement iterations
+MAX_REFINEMENT_ITERATIONS = 4
+
+# Initial coarse grid multiplier (start with grid this many times larger than base)
+INITIAL_GRID_MULTIPLIER = 4
+
+# Initial coarse grid multiplier (start with grid this many times larger than base)
+MINIMAL_GRID_MULTIPLIER = 0.5
 
 def get_room_boundary_points(room, options):
     """Extract boundary curves from a room and return as list of boundary loops.
@@ -90,6 +103,91 @@ def min_distance_to_boundary(px, py, boundary_loops):
             if dist < min_dist:
                 min_dist = dist
     return min_dist
+
+
+def calculate_height_ratios(clear_heights, tolerance=0.05):
+    """Calculate the ratio distribution of clear heights.
+    
+    Groups heights within tolerance and returns a dictionary of 
+    representative height -> ratio (percentage of total).
+    
+    Args:
+        clear_heights: List of clear heights in meters
+        tolerance: Heights within this tolerance are grouped together
+        
+    Returns:
+        Dictionary mapping representative height to its ratio (0-1)
+    """
+    if not clear_heights:
+        return {}
+    
+    sorted_heights = sorted(clear_heights)
+    
+    # Create groups of similar heights
+    groups = []
+    current_group = [sorted_heights[0]]
+    
+    for h in sorted_heights[1:]:
+        if h - current_group[0] <= tolerance:
+            current_group.append(h)
+        else:
+            groups.append(current_group)
+            current_group = [h]
+    groups.append(current_group)
+    
+    # Calculate ratios for each group
+    total_points = len(clear_heights)
+    ratios = {}
+    for group in groups:
+        # Use the mode (most common value) as representative
+        value_counts = {}
+        for v in group:
+            value_counts[v] = value_counts.get(v, 0) + 1
+        representative = max(value_counts.keys(), key=lambda x: value_counts[x])
+        ratios[representative] = len(group) / total_points
+    
+    return ratios
+
+
+def compare_height_ratios(ratios1, ratios2, threshold=0.02):
+    """Compare two height ratio distributions for convergence.
+    
+    Args:
+        ratios1: First ratio dictionary (height -> ratio)
+        ratios2: Second ratio dictionary (height -> ratio)
+        threshold: Maximum allowed difference in ratios
+        
+    Returns:
+        True if the distributions are similar enough (converged)
+    """
+    if not ratios1 or not ratios2:
+        return False
+    
+    # Get all unique heights from both distributions
+    all_heights = set(ratios1.keys()) | set(ratios2.keys())
+    
+    # For each height, check if the ratio difference is within threshold
+    for height in all_heights:
+        ratio1 = ratios1.get(height, 0)
+        ratio2 = ratios2.get(height, 0)
+        
+        # Find matching height in the other distribution (within tolerance)
+        if height not in ratios1:
+            # Try to find a close match
+            for h1 in ratios1:
+                if abs(h1 - height) <= 0.05:
+                    ratio1 = ratios1[h1]
+                    break
+        if height not in ratios2:
+            for h2 in ratios2:
+                if abs(h2 - height) <= 0.05:
+                    ratio2 = ratios2[h2]
+                    break
+        
+        if abs(ratio1 - ratio2) > threshold:
+            return False
+    
+    return True
 
 
 def create_grid_points_in_polygon(boundary_loops, grid_spacing, boundary_inset, z_height):
@@ -265,39 +363,32 @@ def create_debug_model_line(doc, start_point, end_point):
         return None
 
 
-def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, grid_spacing, boundary_inset, max_ray_distance, debug=False, create_debug_lines=False):
-    """Calculate clear heights at grid points within a room.
+def evaluate_heights_at_grid(doc, intersector, boundary_loops, grid_spacing, boundary_inset, z_height, max_ray_distance, debug=False, create_debug_lines=False):
+    """Evaluate clear heights at grid points within a room boundary.
+    
+    This is the core evaluation function that casts rays at each grid point.
+    
+    Args:
+        doc: Revit document
+        intersector: ReferenceIntersector for ray casting
+        boundary_loops: List of boundary loops from get_room_boundary_points
+        grid_spacing: Distance between grid points
+        boundary_inset: Minimum distance from boundary
+        z_height: Z coordinate for grid points
+        max_ray_distance: Maximum ray cast distance
+        debug: Print debug information
+        create_debug_lines: Create model lines for visualization
     
     Returns:
         List of clear heights in meters
     """
-    # Get room's level elevation and computation height
-    level = doc.GetElement(room.LevelId)
-    level_elevation = level.Elevation if level else 0
-    
-    # Get level's computation height parameter (LEVEL_ROOM_COMPUTATION_HEIGHT)
-    computation_height_param = level.get_Parameter(BuiltInParameter.LEVEL_ROOM_COMPUTATION_HEIGHT) if level else None
-    computation_height = computation_height_param.AsDouble() if computation_height_param else 0
-    
-    # Calculate z height for grid points using level elevation + computation height
-    small_offset = 0.01  # ~3mm above floor level
-    z_height = level_elevation + computation_height + small_offset
-    
-    if debug:
-        print(f"  level_elevation={level_elevation * 0.3048:.2f}m, computation_height={computation_height * 0.3048:.2f}m, z_height={z_height * 0.3048:.2f}m")
-    
-    # Get room boundary points
-    boundary_points = get_room_boundary_points(room, boundary_options)
-    if not boundary_points:
-        return []
-    
     # Create grid points within the room boundary
-    grid_points = create_grid_points_in_polygon(boundary_points, grid_spacing, boundary_inset, z_height)
+    grid_points = create_grid_points_in_polygon(boundary_loops, grid_spacing, boundary_inset, z_height)
     if not grid_points:
         return []
     
     if debug:
-        print(f"  Generated {len(grid_points)} grid points")
+        print(f"  Generated {len(grid_points)} grid points (spacing={grid_spacing * 0.3048:.2f}m)")
     
     # Calculate clear heights at each grid point
     clear_heights = []
@@ -378,6 +469,112 @@ def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, g
         print(f"  Created {debug_lines_created} debug model lines")
     
     return clear_heights
+
+
+def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, base_grid_spacing, boundary_inset, max_ray_distance, debug=False, create_debug_lines=False):
+    """Calculate clear heights for a room using adaptive grid refinement.
+    
+    Starts with a coarse grid and progressively refines until the height
+    distribution ratios converge, ensuring we don't miss important details
+    while optimizing performance for different room sizes.
+    
+    Args:
+        doc: Revit document
+        room: Room element
+        intersector: ReferenceIntersector for ray casting
+        boundary_options: SpatialElementBoundaryOptions
+        base_grid_spacing: Base grid spacing (finest level)
+        boundary_inset: Minimum distance from boundary
+        max_ray_distance: Maximum ray cast distance
+        debug: Print debug information
+        create_debug_lines: Create model lines for visualization
+    
+    Returns:
+        List of clear heights in meters
+    """
+    # Get room's level elevation and computation height
+    level = doc.GetElement(room.LevelId)
+    level_elevation = level.Elevation if level else 0
+    
+    # Get level's computation height parameter (LEVEL_ROOM_COMPUTATION_HEIGHT)
+    computation_height_param = level.get_Parameter(BuiltInParameter.LEVEL_ROOM_COMPUTATION_HEIGHT) if level else None
+    computation_height = computation_height_param.AsDouble() if computation_height_param else 0
+    
+    # Calculate z height for grid points using level elevation + computation height
+    small_offset = 0.01  # ~3mm above floor level
+    z_height = level_elevation + computation_height + small_offset
+    
+    if debug:
+        print(f"  level_elevation={level_elevation * 0.3048:.2f}m, computation_height={computation_height * 0.3048:.2f}m, z_height={z_height * 0.3048:.2f}m")
+    
+    # Get room boundary loops
+    boundary_loops = get_room_boundary_points(room, boundary_options)
+    if not boundary_loops:
+        return []
+    
+    # Start with coarse grid and refine until convergence
+    current_multiplier = INITIAL_GRID_MULTIPLIER
+    previous_ratios = None
+    final_heights = []
+    
+    for iteration in range(MAX_REFINEMENT_ITERATIONS):
+        current_spacing = base_grid_spacing * current_multiplier
+        
+        if debug:
+            print(f"  Iteration {iteration + 1}: grid_spacing={current_spacing * 0.3048:.2f}m (multiplier={current_multiplier}x)")
+        
+        # Evaluate heights at current grid spacing
+        # Only create debug lines on the final iteration (when converged or last iteration)
+        heights = evaluate_heights_at_grid(
+            doc, intersector, boundary_loops, current_spacing, boundary_inset,
+            z_height, max_ray_distance, debug=(debug and iteration == 0), 
+            create_debug_lines=False  # We'll create lines after convergence
+        )
+        
+        if not heights:
+            if debug:
+                print(f"  No heights found at iteration {iteration + 1}")
+            # Try finer grid
+            current_multiplier = max(MINIMAL_GRID_MULTIPLIER, current_multiplier // 2)
+            continue
+        
+        # Calculate height ratios
+        current_ratios = calculate_height_ratios(heights)
+        
+        if debug:
+            print(f"  Ratios: {', '.join(f'{h:.2f}m:{r*100:.1f}%' for h, r in sorted(current_ratios.items()))}")
+        
+        # Check for convergence
+        if previous_ratios is not None:
+            if compare_height_ratios(previous_ratios, current_ratios, CONVERGENCE_THRESHOLD):
+                if debug:
+                    print(f"  Converged at iteration {iteration + 1}!")
+                final_heights = heights
+                break
+        
+        # Store for next iteration
+        previous_ratios = current_ratios
+        final_heights = heights
+        
+        # Refine grid (halve the multiplier, but don't go below 1)
+        if current_multiplier <= MINIMAL_GRID_MULTIPLIER:
+            if debug:
+                print(f"  Reached finest grid level")
+            break
+        current_multiplier = max(MINIMAL_GRID_MULTIPLIER, current_multiplier // 2)
+    
+    # Create debug lines with the final grid spacing if requested
+    if create_debug_lines and final_heights:
+        if debug:
+            print(f"  Creating debug lines with final grid...")
+        # Re-run with debug lines enabled at the converged spacing
+        final_spacing = base_grid_spacing * max(MINIMAL_GRID_MULTIPLIER, current_multiplier)
+        final_heights = evaluate_heights_at_grid(
+            doc, intersector, boundary_loops, final_spacing, boundary_inset,
+            z_height, max_ray_distance, debug=False, create_debug_lines=True
+        )
+    
+    return final_heights
 
 
 def filter_heights_by_threshold(clear_heights, threshold, debug=False):
@@ -538,7 +735,7 @@ def main(debug=True, create_debug_lines=False):
             # Set create_debug_lines=True to visualize ray paths as model lines
             clear_heights = calculate_clear_heights_for_room(
                 doc, room, intersector, boundary_options,
-                GRID_SPACING, BOUNDARY_INSET, max_ray_distance, 
+                BASE_GRID_SPACING, BOUNDARY_INSET, max_ray_distance, 
                 debug=debug, create_debug_lines=create_debug_lines
             )
             
