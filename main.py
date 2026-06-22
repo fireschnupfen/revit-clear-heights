@@ -14,7 +14,7 @@ except ImportError:
 __revit__: str
 
 # Grid spacing in feet (approximately 0.1m = ~0.328 feet)
-GRID_SPACING = 0.328 * 10
+GRID_SPACING = 0.328 * 5
 
 # Minimum distance from boundary to avoid edge issues (in feet, ~10cm)
 BOUNDARY_INSET = 0.328
@@ -200,7 +200,42 @@ def find_closest_room_bounding_hit(doc, refs, max_distance, require_upward_norma
     return closest_distance, elem_info
 
 
-def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, grid_spacing, boundary_inset, max_ray_distance, debug=False):
+def create_debug_model_line(doc, start_point, end_point):
+    """Create a model line for debugging ray paths.
+    
+    Creates a vertical model line by generating an appropriate sketch plane
+    for each line based on its position.
+    """
+    from Autodesk.Revit.DB import Line, Plane, SketchPlane, XYZ
+    try:
+        line = Line.CreateBound(start_point, end_point)
+        
+        # For vertical lines, we need a vertical sketch plane
+        # Create a plane that contains the line - use a horizontal normal
+        # The plane normal should be perpendicular to the line direction
+        line_direction = (end_point - start_point).Normalize()
+        
+        # For vertical lines (Z direction), use X or Y as the normal
+        if abs(line_direction.Z) > 0.9:  # Nearly vertical
+            # Use Y-axis as normal for the sketch plane
+            plane_normal = XYZ(0, 1, 0)
+        else:
+            # For non-vertical lines, use Z cross line_direction
+            plane_normal = XYZ.BasisZ.CrossProduct(line_direction).Normalize()
+        
+        plane = Plane.CreateByNormalAndOrigin(plane_normal, start_point)
+        sketch_plane = SketchPlane.Create(doc, plane)
+        
+        model_line = doc.Create.NewModelCurve(line, sketch_plane)
+        print(f"    Created debug line sucessfully: {model_line.Id.Value}")
+
+        return model_line
+    except Exception as e:
+        print(f"    Error creating debug line: {e}")
+        return None
+
+
+def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, grid_spacing, boundary_inset, max_ray_distance, debug=False, create_debug_lines=False):
     """Calculate clear heights at grid points within a room.
     
     Returns:
@@ -240,6 +275,7 @@ def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, g
     down_direction = XYZ(0, 0, -1)
     
     debug_count = 0
+    debug_lines_created = 0
     for point in grid_points:
         should_debug = debug and debug_count < 1
         
@@ -274,15 +310,26 @@ def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, g
             clear_height = ceiling_distance - floor_top_distance
             floor_info = floor_top_info
             floor_dist = -floor_top_distance  # negative because it's above us
+            floor_point = XYZ(point.X, point.Y, point.Z + floor_top_distance)
         elif floor_below_distance is not None and ceiling_distance is not None:
             # Floor is below our starting point - measure from floor to ceiling
             clear_height = ceiling_distance + floor_below_distance
             floor_info = floor_below_info
             floor_dist = floor_below_distance
+            floor_point = XYZ(point.X, point.Y, point.Z - floor_below_distance)
         else:
             clear_height = None
             floor_info = None
             floor_dist = None
+            floor_point = None
+        
+        # Create debug model lines for ray paths
+        if create_debug_lines and ceiling_distance is not None:
+            ceiling_point = XYZ(point.X, point.Y, point.Z + ceiling_distance)
+            # Create line from floor to ceiling (the clear height measurement)
+            if floor_point is not None:
+                create_debug_model_line(doc, floor_point, ceiling_point)
+                debug_lines_created += 1
         
         if debug and debug_count < 3:
             ceiling_m = ceiling_distance * 0.3048 if ceiling_distance else None
@@ -296,6 +343,9 @@ def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, g
             # Convert from feet to meters and round to 2 decimal places
             clear_height_m = round(clear_height * 0.3048, 2)
             clear_heights.append(clear_height_m)
+    
+    if create_debug_lines and debug:
+        print(f"  Created {debug_lines_created} debug model lines")
     
     return clear_heights
 
@@ -366,10 +416,10 @@ def filter_heights_by_threshold(clear_heights, threshold, debug=False):
     for representative, count in group_info:
         percentage = count / total_points
         if percentage >= threshold:
-            # If there's a dominant height, only include heights within 0.20m of it
+            # If there's a dominant height, only include heights within 0.25m of it
             # This filters out outliers (like beams, ducts) while keeping intentional variations
             if dominant_height is not None:
-                if abs(representative - dominant_height) <= 0.20:
+                if abs(representative - dominant_height) <= 0.25:
                     filtered_heights.append(representative)
             else:
                 filtered_heights.append(representative)
@@ -407,7 +457,7 @@ def format_clear_height_result(filtered_heights):
 
 
 @revit
-def main():
+def main(debug=True, create_debug_lines=False):
     doc = __revit__.ActiveUIDocument.Document
     uidoc = __revit__.ActiveUIDocument
     
@@ -455,9 +505,11 @@ def main():
             max_ray_distance = unbounded_height * 1.5
             
             # Calculate clear heights for this room
+            # Set create_debug_lines=True to visualize ray paths as model lines
             clear_heights = calculate_clear_heights_for_room(
                 doc, room, intersector, boundary_options,
-                GRID_SPACING, BOUNDARY_INSET, max_ray_distance, debug=True
+                GRID_SPACING, BOUNDARY_INSET, max_ray_distance, 
+                debug=debug, create_debug_lines=create_debug_lines
             )
             
             if not clear_heights:
