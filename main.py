@@ -14,7 +14,7 @@ except ImportError:
 __revit__: str
 
 # Grid spacing in feet (approximately 0.1m = ~0.328 feet)
-GRID_SPACING = 0.328 * 5
+GRID_SPACING = 0.328 * 10
 
 # Minimum distance from boundary to avoid edge issues (in feet, ~10cm)
 BOUNDARY_INSET = 0.328
@@ -25,17 +25,25 @@ THRESHOLD = 0.076
 
 
 def get_room_boundary_points(room, options):
-    """Extract boundary curves from a room and return as list of points."""
+    """Extract boundary curves from a room and return as list of boundary loops.
+    
+    Returns:
+        List of boundary loops, where each loop is a list of points.
+        The first loop is the outer boundary, subsequent loops are holes.
+    """
     boundary_segments = room.GetBoundarySegments(options)
     if not boundary_segments or boundary_segments.Count == 0:
         return []
     
-    points = []
+    boundary_loops = []
     for segment_list in boundary_segments:
+        loop_points = []
         for segment in segment_list:
             curve = segment.GetCurve()
-            points.append(curve.GetEndPoint(0))
-    return points
+            loop_points.append(curve.GetEndPoint(0))
+        if loop_points:
+            boundary_loops.append(loop_points)
+    return boundary_loops
 
 
 def is_point_in_polygon(px, py, polygon_points):
@@ -70,32 +78,45 @@ def point_to_segment_distance(px, py, x1, y1, x2, y2):
     return ((px - proj_x) ** 2 + (py - proj_y) ** 2) ** 0.5
 
 
-def min_distance_to_boundary(px, py, boundary_points):
-    """Calculate minimum distance from point to any boundary edge."""
+def min_distance_to_boundary(px, py, boundary_loops):
+    """Calculate minimum distance from point to any boundary edge in any loop."""
     min_dist = float('inf')
-    n = len(boundary_points)
-    for i in range(n):
-        x1, y1 = boundary_points[i].X, boundary_points[i].Y
-        x2, y2 = boundary_points[(i + 1) % n].X, boundary_points[(i + 1) % n].Y
-        dist = point_to_segment_distance(px, py, x1, y1, x2, y2)
-        if dist < min_dist:
-            min_dist = dist
+    for loop in boundary_loops:
+        n = len(loop)
+        for i in range(n):
+            x1, y1 = loop[i].X, loop[i].Y
+            x2, y2 = loop[(i + 1) % n].X, loop[(i + 1) % n].Y
+            dist = point_to_segment_distance(px, py, x1, y1, x2, y2)
+            if dist < min_dist:
+                min_dist = dist
     return min_dist
 
 
-def create_grid_points_in_polygon(boundary_points, grid_spacing, boundary_inset, z_height):
+def create_grid_points_in_polygon(boundary_loops, grid_spacing, boundary_inset, z_height):
     """Create a dense grid of points within the polygon boundary at given z height.
     
     Points are placed at least boundary_inset distance from any edge.
+    Handles multiple boundary loops: first loop is outer boundary, rest are holes.
+    
+    Args:
+        boundary_loops: List of boundary loops (each loop is a list of points)
+        grid_spacing: Distance between grid points
+        boundary_inset: Minimum distance from any boundary edge
+        z_height: Z coordinate for all grid points
     """
-    if not boundary_points:
+    if not boundary_loops:
         return []
     
-    # Find bounding box of the polygon
-    min_x = min(p.X for p in boundary_points)
-    max_x = max(p.X for p in boundary_points)
-    min_y = min(p.Y for p in boundary_points)
-    max_y = max(p.Y for p in boundary_points)
+    # First loop is the outer boundary
+    outer_boundary = boundary_loops[0]
+    # Remaining loops are holes (inner boundaries)
+    holes = boundary_loops[1:] if len(boundary_loops) > 1 else []
+    
+    # Find bounding box of the outer polygon
+    min_x = min(p.X for p in outer_boundary)
+    max_x = max(p.X for p in outer_boundary)
+    min_y = min(p.Y for p in outer_boundary)
+    max_y = max(p.Y for p in outer_boundary)
     
     # Generate grid points
     grid_points = []
@@ -103,11 +124,20 @@ def create_grid_points_in_polygon(boundary_points, grid_spacing, boundary_inset,
     while x < max_x:
         y = min_y + grid_spacing / 2
         while y < max_y:
-            # Check if point is inside polygon and far enough from boundary
-            if is_point_in_polygon(x, y, boundary_points):
-                dist_to_boundary = min_distance_to_boundary(x, y, boundary_points)
-                if dist_to_boundary >= boundary_inset:
-                    grid_points.append(XYZ(x, y, z_height))
+            # Check if point is inside outer polygon
+            if is_point_in_polygon(x, y, outer_boundary):
+                # Check if point is outside all holes
+                in_hole = False
+                for hole in holes:
+                    if is_point_in_polygon(x, y, hole):
+                        in_hole = True
+                        break
+                
+                if not in_hole:
+                    # Check distance to all boundaries (outer + holes)
+                    dist_to_boundary = min_distance_to_boundary(x, y, boundary_loops)
+                    if dist_to_boundary >= boundary_inset:
+                        grid_points.append(XYZ(x, y, z_height))
             y += grid_spacing
         x += grid_spacing
     
@@ -241,20 +271,20 @@ def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, g
     Returns:
         List of clear heights in meters
     """
-    # Get room's level elevation
+    # Get room's level elevation and computation height
     level = doc.GetElement(room.LevelId)
     level_elevation = level.Elevation if level else 0
     
-    # Get room's base offset
-    base_offset_param = room.get_Parameter(BuiltInParameter.ROOM_LOWER_OFFSET)
-    base_offset = base_offset_param.AsDouble() if base_offset_param else 0
+    # Get level's computation height parameter (LEVEL_ROOM_COMPUTATION_HEIGHT)
+    computation_height_param = level.get_Parameter(BuiltInParameter.LEVEL_ROOM_COMPUTATION_HEIGHT) if level else None
+    computation_height = computation_height_param.AsDouble() if computation_height_param else 0
     
-    # Calculate z height for grid points (slightly above floor level)
+    # Calculate z height for grid points using level elevation + computation height
     small_offset = 0.01  # ~3mm above floor level
-    z_height = level_elevation + base_offset + small_offset
+    z_height = level_elevation + computation_height + small_offset
     
     if debug:
-        print(f"  level_elevation={level_elevation * 0.3048:.2f}m, base_offset={base_offset * 0.3048:.2f}m, z_height={z_height * 0.3048:.2f}m")
+        print(f"  level_elevation={level_elevation * 0.3048:.2f}m, computation_height={computation_height * 0.3048:.2f}m, z_height={z_height * 0.3048:.2f}m")
     
     # Get room boundary points
     boundary_points = get_room_boundary_points(room, boundary_options)
@@ -344,7 +374,7 @@ def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, g
             clear_height_m = round(clear_height * 0.3048, 2)
             clear_heights.append(clear_height_m)
     
-    if create_debug_lines and debug:
+    if create_debug_lines:
         print(f"  Created {debug_lines_created} debug model lines")
     
     return clear_heights

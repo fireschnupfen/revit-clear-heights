@@ -22,7 +22,7 @@ def set_clear_heights(room_id):
     uidoc.Selection.SetElementIds(ids)
 
     room = uidoc.Document.GetElement(id)
-    main(create_debug_lines=False)
+    main(create_debug_lines=True)
 
     return(room.LookupParameter("Lichte_Raumhöhe").AsString(), room.LookupParameter("CLEAR_HEIGHT_VALIDATION").AsString())
 
