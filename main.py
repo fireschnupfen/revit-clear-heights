@@ -1,4 +1,6 @@
 from revit_rpc import revit
+import numpy as np
+from matplotlib.path import Path
 
 try:
     from Autodesk.Revit.DB import (
@@ -608,7 +610,7 @@ def min_distance_to_boundary_single(px, py, boundary_points):
     return min_dist
 
 
-def create_grid_points_bounding_box(boundary_loops, grid_spacing, boundary_inset, z_height):
+def create_grid_points_bounding_box(boundary_loops, grid_spacing, boundary_inset, z_height, profile=False):
     """Create grid points within the polygon using a bounding box approach.
     
     This is a performance-optimized alternative to create_grid_points_in_polygon.
@@ -616,64 +618,113 @@ def create_grid_points_bounding_box(boundary_loops, grid_spacing, boundary_inset
     rectangular grid and filters points to those inside the boundary.
     
     Additionally, points are generated along the first inset boundary curve to ensure
-    the boundary edges are fully taken into account.
+    the boundary edges are fully taken into account, including all corner points.
     
     Performance optimizations:
-    1. Simplifies boundary to reduce vertex count (faster point-in-polygon checks)
-    2. Uses bounding box inset instead of per-point distance checks
-    3. O(grid_points * simplified_vertices) complexity
+    1. Uses matplotlib Path.contains_points for vectorized point-in-polygon checks
+    2. Uses numpy for fast array operations
+    3. Generates all grid points at once and filters in batch
     
     Args:
         boundary_loops: List of boundary loops (each loop is a list of points)
         grid_spacing: Distance between grid points
         boundary_inset: Minimum distance from boundary for valid points
         z_height: Z coordinate for all grid points
+        profile: Print timing information for performance analysis
         
     Returns:
         List of XYZ points within the boundary
     """
+    import time
+    
     if not boundary_loops:
         return []
     
-    # Simplify boundaries to reduce vertex count for faster point-in-polygon checks
-    simplified_loops = simplify_boundary_loops(boundary_loops, SIMPLIFICATION_ANGLE_TOLERANCE)
+    t_start = time.time()
     
-    # First loop is the outer boundary (simplified for point-in-polygon checks)
-    outer_boundary = simplified_loops[0]
+    # First loop is the outer boundary
+    outer_boundary = boundary_loops[0]
     # Remaining loops are holes (inner boundaries)
-    holes = simplified_loops[1:] if len(simplified_loops) > 1 else []
+    holes = boundary_loops[1:] if len(boundary_loops) > 1 else []
+    
+    # Convert outer boundary to numpy array for matplotlib Path
+    outer_vertices = np.array([(p.X, p.Y) for p in outer_boundary])
+    outer_path = Path(outer_vertices)
+    
+    # Convert holes to matplotlib Paths
+    hole_paths = []
+    for hole in holes:
+        hole_vertices = np.array([(p.X, p.Y) for p in hole])
+        hole_paths.append(Path(hole_vertices))
+    
+    t_path_setup = time.time()
+    if profile:
+        print(f"    [PROFILE] Path setup: {t_path_setup - t_start:.4f}s")
     
     all_points = []
     
     # Generate points along the first inset boundary curve
     # This ensures the boundary edges are fully taken into account
-    # Use the original (non-simplified) boundary for accurate boundary coverage
-    original_outer_boundary = boundary_loops[0]
-    original_boundary_tuples = [(p.X, p.Y) for p in original_outer_boundary]
+    original_boundary_tuples = [(p.X, p.Y) for p in outer_boundary]
     inset_boundary = inset_boundary_loop_tuples(original_boundary_tuples, boundary_inset)
     
+    t_inset = time.time()
+    if profile:
+        print(f"    [PROFILE] Boundary inset: {t_inset - t_path_setup:.4f}s")
+    
     if inset_boundary:
-        # Generate points along the inset boundary with segment length = grid_spacing
+        # First, add all corner points (vertices) of the inset boundary
+        # This ensures corners are always sampled even if grid_spacing is large
+        corner_coords = np.array(inset_boundary)
+        
+        # Check which corners are inside holes using vectorized operations
+        corners_valid = np.ones(len(corner_coords), dtype=bool)
+        for hole_path in hole_paths:
+            corners_in_hole = hole_path.contains_points(corner_coords)
+            corners_valid &= ~corners_in_hole
+        
+        # Add valid corner points
+        for i, (cx, cy) in enumerate(corner_coords):
+            if corners_valid[i]:
+                all_points.append(XYZ(cx, cy, z_height))
+        
+        t_corners = time.time()
+        if profile:
+            print(f"    [PROFILE] Corner points ({len(corner_coords)} corners, {sum(corners_valid)} valid): {t_corners - t_inset:.4f}s")
+        
+        # Generate additional points along the inset boundary with segment length = grid_spacing
         boundary_points = generate_points_along_boundary(inset_boundary, grid_spacing, z_height)
         
-        # Filter out boundary points that are inside holes
-        for point in boundary_points:
-            in_hole = False
-            for hole in holes:
-                if is_point_in_polygon(point.X, point.Y, hole):
-                    in_hole = True
-                    break
-            if not in_hole:
-                all_points.append(point)
+        t_boundary_gen = time.time()
+        if profile:
+            print(f"    [PROFILE] Boundary point generation ({len(boundary_points) if boundary_points else 0} points): {t_boundary_gen - t_corners:.4f}s")
+        
+        if boundary_points:
+            # Convert boundary points to numpy array for vectorized hole check
+            boundary_coords = np.array([(p.X, p.Y) for p in boundary_points])
+            
+            # Check which boundary points are inside holes
+            boundary_valid = np.ones(len(boundary_coords), dtype=bool)
+            for hole_path in hole_paths:
+                in_hole = hole_path.contains_points(boundary_coords)
+                boundary_valid &= ~in_hole
+            
+            # Add valid boundary points
+            for i, point in enumerate(boundary_points):
+                if boundary_valid[i]:
+                    all_points.append(point)
+        
+        t_boundary_filter = time.time()
+        if profile:
+            print(f"    [PROFILE] Boundary point filtering: {t_boundary_filter - t_boundary_gen:.4f}s")
     
     # Calculate bounding box of outer boundary
-    min_x = min(p.X for p in outer_boundary)
-    max_x = max(p.X for p in outer_boundary)
-    min_y = min(p.Y for p in outer_boundary)
-    max_y = max(p.Y for p in outer_boundary)
+    min_x = outer_vertices[:, 0].min()
+    max_x = outer_vertices[:, 0].max()
+    min_y = outer_vertices[:, 1].min()
+    max_y = outer_vertices[:, 1].max()
     
     # Inset the bounding box by boundary_inset to provide margin from edges
-    # This replaces the expensive per-point distance-to-boundary checks
     min_x += boundary_inset
     max_x -= boundary_inset
     min_y += boundary_inset
@@ -683,25 +734,46 @@ def create_grid_points_bounding_box(boundary_loops, grid_spacing, boundary_inset
     if min_x >= max_x or min_y >= max_y:
         return all_points  # Return boundary points even if grid area is too small
     
-    # Generate grid points
-    x = min_x
-    while x <= max_x:
-        y = min_y
-        while y <= max_y:
-            # Check if point is inside outer boundary
-            if is_point_in_polygon(x, y, outer_boundary):
-                # Check if point is NOT inside any hole
-                in_hole = False
-                for hole in holes:
-                    if is_point_in_polygon(x, y, hole):
-                        in_hole = True
-                        break
-                
-                if not in_hole:
-                    all_points.append(XYZ(x, y, z_height))
-            
-            y += grid_spacing
-        x += grid_spacing
+    # Generate all grid points at once using numpy
+    x_coords = np.arange(min_x, max_x + grid_spacing, grid_spacing)
+    y_coords = np.arange(min_y, max_y + grid_spacing, grid_spacing)
+    
+    # Create meshgrid and flatten to get all point coordinates
+    xx, yy = np.meshgrid(x_coords, y_coords)
+    grid_coords = np.column_stack([xx.ravel(), yy.ravel()])
+    
+    t_grid_gen = time.time()
+    if profile:
+        print(f"    [PROFILE] Grid generation ({len(grid_coords)} candidates): {t_grid_gen - (t_boundary_filter if inset_boundary else t_inset):.4f}s")
+    
+    # Use matplotlib Path.contains_points for vectorized point-in-polygon check
+    inside_outer = outer_path.contains_points(grid_coords)
+    
+    t_pip_outer = time.time()
+    if profile:
+        print(f"    [PROFILE] Point-in-polygon (outer): {t_pip_outer - t_grid_gen:.4f}s")
+    
+    # Check which points are inside holes
+    inside_any_hole = np.zeros(len(grid_coords), dtype=bool)
+    for hole_path in hole_paths:
+        inside_any_hole |= hole_path.contains_points(grid_coords)
+    
+    t_pip_holes = time.time()
+    if profile:
+        print(f"    [PROFILE] Point-in-polygon (holes): {t_pip_holes - t_pip_outer:.4f}s")
+    
+    # Points are valid if inside outer boundary and not inside any hole
+    valid_mask = inside_outer & ~inside_any_hole
+    
+    # Convert valid grid points to XYZ objects
+    valid_coords = grid_coords[valid_mask]
+    for x, y in valid_coords:
+        all_points.append(XYZ(x, y, z_height))
+    
+    t_xyz_creation = time.time()
+    if profile:
+        print(f"    [PROFILE] XYZ object creation ({len(valid_coords)} grid + {len(all_points) - len(valid_coords)} boundary): {t_xyz_creation - t_pip_holes:.4f}s")
+        print(f"    [PROFILE] Total create_grid_points_bounding_box: {t_xyz_creation - t_start:.4f}s")
     
     return all_points
 
@@ -827,7 +899,7 @@ def create_debug_model_line(doc, start_point, end_point):
         return None
 
 
-def evaluate_heights_at_grid(doc, intersector, boundary_loops, boundary_inset, z_height, max_ray_distance, debug=False, create_debug_lines=False):
+def evaluate_heights_at_grid(doc, intersector, boundary_loops, boundary_inset, z_height, max_ray_distance, debug=False, create_debug_lines=False, profile=False):
     """Evaluate clear heights at grid points within a room boundary.
     
     This is the core evaluation function that casts rays at each grid point.
@@ -841,10 +913,13 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, boundary_inset, z
         max_ray_distance: Maximum ray cast distance
         debug: Print debug information
         create_debug_lines: Create model lines for visualization
+        profile: Print timing information for performance analysis
     
     Returns:
         List of clear heights in meters
     """
+    import time
+    
     # Debug: Print boundary information
     if debug and boundary_loops:
         outer_boundary = boundary_loops[0]
@@ -858,11 +933,16 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, boundary_inset, z
     # Create grid points within the room boundary using bounding box approach
     # This is much faster for complex boundaries as it's O(grid_size) instead of O(vertices * inset_levels)
     # Use GRID_SPACING constant for optimal performance (larger spacing = fewer points = faster)
-    grid_points = create_grid_points_bounding_box(boundary_loops, GRID_SPACING, boundary_inset, z_height)
+    t_grid_start = time.time()
+    grid_points = create_grid_points_bounding_box(boundary_loops, GRID_SPACING, boundary_inset, z_height, profile=profile)
+    t_grid_end = time.time()
+    if profile:
+        print(f"  [PROFILE] Grid point generation: {t_grid_end - t_grid_start:.3f}s")
+    
     if not grid_points:
         return []
     
-    if debug:
+    if debug or profile:
         print(f"  Generated {len(grid_points)} grid points")
     
     # Calculate clear heights at each grid point
@@ -872,6 +952,12 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, boundary_inset, z
     
     debug_count = 0
     debug_lines_created = 0
+    
+    # Profiling accumulators
+    t_ray_cast_total = 0.0
+    t_hit_process_total = 0.0
+    
+    t_loop_start = time.time()
     for point in grid_points:
         should_debug = debug and debug_count < 1
         
@@ -882,21 +968,30 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, boundary_inset, z
         # Cast ray upward - we need to find both:
         # 1. The floor's top surface (upward-facing normal) - this is where we measure FROM
         # 2. The ceiling's bottom surface (downward-facing normal) - this is where we measure TO
+        t_ray_start = time.time()
         up_refs = intersector.Find(point, up_direction)
+        t_ray_cast_total += time.time() - t_ray_start
         
         # Find ceiling (downward-facing normal)
+        t_hit_start = time.time()
         ceiling_distance, ceiling_info = find_closest_room_bounding_hit(doc, up_refs, max_ray_distance, require_upward_normal=False, debug=should_debug)
         
         # Find floor top surface above us (upward-facing normal) - this handles cases where
         # we start slightly below the floor surface
         floor_top_distance, floor_top_info = find_closest_room_bounding_hit(doc, up_refs, max_ray_distance, require_upward_normal=True, debug=should_debug)
+        t_hit_process_total += time.time() - t_hit_start
         
         if should_debug:
             print(f"  Casting DOWN:")
         
         # Cast ray downward - find floor's top surface (upward-facing normal)
+        t_ray_start = time.time()
         down_refs = intersector.Find(point, down_direction)
+        t_ray_cast_total += time.time() - t_ray_start
+        
+        t_hit_start = time.time()
         floor_below_distance, floor_below_info = find_closest_room_bounding_hit(doc, down_refs, max_ray_distance, require_upward_normal=True, debug=should_debug)
+        t_hit_process_total += time.time() - t_hit_start
         
         # Calculate clear height
         # If there's a floor surface above us (we started below it) AND it's closer than the ceiling,
@@ -941,13 +1036,22 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, boundary_inset, z
             clear_height_m = round(clear_height * 0.3048, 3)
             clear_heights.append(clear_height_m)
     
+    t_loop_end = time.time()
+    
+    if profile:
+        print(f"  [PROFILE] Ray casting loop total: {t_loop_end - t_loop_start:.3f}s")
+        print(f"  [PROFILE]   - Ray casting (intersector.Find): {t_ray_cast_total:.3f}s ({t_ray_cast_total/(t_loop_end - t_loop_start)*100:.1f}%)")
+        print(f"  [PROFILE]   - Hit processing (find_closest_room_bounding_hit): {t_hit_process_total:.3f}s ({t_hit_process_total/(t_loop_end - t_loop_start)*100:.1f}%)")
+        other_time = (t_loop_end - t_loop_start) - t_ray_cast_total - t_hit_process_total
+        print(f"  [PROFILE]   - Other (loop overhead, height calc): {other_time:.3f}s ({other_time/(t_loop_end - t_loop_start)*100:.1f}%)")
+    
     if create_debug_lines:
         print(f"  Created {debug_lines_created} debug model lines")
     
     return clear_heights
 
 
-def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, boundary_inset, max_ray_distance, debug=False, create_debug_lines=False):
+def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, boundary_inset, max_ray_distance, debug=False, create_debug_lines=False, profile=False):
     """Calculate clear heights for a room using bounding box grid approach.
     
     Args:
@@ -959,6 +1063,7 @@ def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, b
         max_ray_distance: Maximum ray cast distance
         debug: Print debug information
         create_debug_lines: Create model lines for visualization
+        profile: Print timing information for performance analysis
     
     Returns:
         List of clear heights in meters
@@ -987,7 +1092,8 @@ def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, b
     final_heights = evaluate_heights_at_grid(
         doc, intersector, boundary_loops, boundary_inset,
         z_height, max_ray_distance, debug=debug, 
-        create_debug_lines=False  # We'll create lines after if requested
+        create_debug_lines=False,  # We'll create lines after if requested
+        profile=profile
     )
     
     # Create debug lines if requested
@@ -1087,11 +1193,11 @@ def filter_heights_by_threshold(clear_heights, threshold, debug=False):
     for representative, count in group_info:
         percentage = count / total_points
         if percentage >= threshold:
-            # If there's a dominant height, only include heights within 0.25m of it
+            # If there's a dominant height, only include heights within 0.20m of it
             # This filters out outliers (like beams, ducts) while keeping intentional variations
             if dominant_height is not None:
-                # Use a smaller window if we want to be more strict about what's considered a variation
-                if abs(representative - dominant_height) <= 0.25:
+                # Use a smaller window to be more strict about what's considered a variation
+                if abs(representative - dominant_height) <= 0.20:
                     filtered_heights.append(representative)
             else:
                 filtered_heights.append(representative)
@@ -1131,7 +1237,7 @@ def format_clear_height_result(filtered_heights):
 
 
 @revit
-def main(debug=False, create_debug_lines=False):
+def main(debug=False, create_debug_lines=False, profile=False):
     doc = __revit__.ActiveUIDocument.Document
     uidoc = __revit__.ActiveUIDocument
     
@@ -1183,7 +1289,8 @@ def main(debug=False, create_debug_lines=False):
             clear_heights = calculate_clear_heights_for_room(
                 doc, room, intersector, boundary_options,
                 BOUNDARY_INSET, max_ray_distance, 
-                debug=debug, create_debug_lines=create_debug_lines
+                debug=debug, create_debug_lines=create_debug_lines,
+                profile=profile
             )
             
             if not clear_heights:
