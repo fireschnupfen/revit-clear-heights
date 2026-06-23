@@ -17,7 +17,7 @@ __revit__: str
 
 # Grid spacing in feet (approximately 1m = ~3.28 feet)
 # Larger spacing = fewer points = faster computation
-GRID_SPACING = 3.28 * 0.7
+GRID_SPACING = 3.28 * 1.2
 
 # Minimum distance from boundary to avoid edge issues (in feet, ~10cm)
 BOUNDARY_INSET = 0.328
@@ -28,7 +28,7 @@ SIMPLIFICATION_ANGLE_TOLERANCE = 0.087
 
 # Threshold for filtering clear heights (7.6% = 0.076)
 # Heights representing less than 7.6% of the room area are filtered out
-THRESHOLD = 0.10
+THRESHOLD = 0.08
 
 def get_room_boundary_points(room, options):
     """Extract boundary curves from a room and return as list of boundary loops.
@@ -476,7 +476,37 @@ def create_grid_points_bounding_box(boundary_loops, grid_spacing, boundary_inset
     t_xyz_creation = time.time()
     if profile:
         print(f"    [PROFILE] XYZ object creation ({len(valid_coords)} grid + {len(all_points) - len(valid_coords)} boundary): {t_xyz_creation - t_pip_holes:.4f}s")
-        print(f"    [PROFILE] Total create_grid_points_bounding_box: {t_xyz_creation - t_start:.4f}s")
+    
+    # Merge points that are too close together to avoid clustered sampling
+    # This is especially important in small rooms where boundary and grid points may overlap
+    min_point_distance = grid_spacing * 0.5  # Points closer than half grid spacing are merged
+    
+    if len(all_points) > 1:
+        # Convert all points to numpy array for efficient distance calculation
+        all_coords = np.array([(p.X, p.Y) for p in all_points])
+        
+        # Use a simple greedy approach: keep first point, then only add points far enough from all kept points
+        kept_indices = [0]
+        for i in range(1, len(all_coords)):
+            # Calculate distance to all kept points
+            kept_coords = all_coords[kept_indices]
+            distances = np.sqrt(np.sum((kept_coords - all_coords[i])**2, axis=1))
+            
+            # Only keep if far enough from all existing kept points
+            if np.min(distances) >= min_point_distance:
+                kept_indices.append(i)
+        
+        # Filter to kept points only
+        merged_points = [all_points[i] for i in kept_indices]
+        
+        if profile:
+            print(f"    [PROFILE] Point merging: {len(all_points)} -> {len(merged_points)} points (min_dist={min_point_distance:.2f}ft)")
+        
+        all_points = merged_points
+    
+    t_merge = time.time()
+    if profile:
+        print(f"    [PROFILE] Total create_grid_points_bounding_box: {t_merge - t_start:.4f}s")
     
     return all_points
 
@@ -567,88 +597,39 @@ def find_closest_room_bounding_hit(doc, refs, max_distance, require_upward_norma
     return closest_distance, elem_info
 
 
-def create_debug_lines_batch(doc, line_endpoints, debug=False):
-    """Create multiple model lines for debugging using shared sketch planes.
+def create_debug_model_line(doc, start_point, end_point):
+    """Create a model line for debugging ray paths.
     
-    This is much faster than creating lines one at a time because it reuses
-    sketch planes for lines with similar orientations.
-    
-    Args:
-        doc: Revit document
-        line_endpoints: List of tuples (start_point, end_point) for each line
-        debug: Print debug information
-        
-    Returns:
-        Number of lines created successfully
+    Creates a vertical model line by generating an appropriate sketch plane
+    for each line based on its position.
     """
     from Autodesk.Revit.DB import Line, Plane, SketchPlane, XYZ
-    
-    if not line_endpoints:
-        return 0
-    
-    lines_created = 0
-    
-    # Group lines by orientation: vertical vs horizontal
-    vertical_lines = []  # Lines with Z direction > 0.9
-    horizontal_lines = []  # Other lines
-    
-    for start_point, end_point in line_endpoints:
-        try:
-            direction = (end_point - start_point).Normalize()
-            if abs(direction.Z) > 0.9:
-                vertical_lines.append((start_point, end_point))
-            else:
-                horizontal_lines.append((start_point, end_point))
-        except:
-            pass
-    
-    # Create vertical lines with a single shared sketch plane
-    if vertical_lines:
-        try:
-            # Use Y-axis as normal for vertical lines sketch plane
-            # Use the first point as origin
-            first_start = vertical_lines[0][0]
+    try:
+        line = Line.CreateBound(start_point, end_point)
+        
+        # For vertical lines, we need a vertical sketch plane
+        # Create a plane that contains the line - use a horizontal normal
+        # The plane normal should be perpendicular to the line direction
+        line_direction = (end_point - start_point).Normalize()
+        
+        # For vertical lines (Z direction), use X or Y as the normal
+        if abs(line_direction.Z) > 0.9:  # Nearly vertical
+            # Use Y-axis as normal for the sketch plane
             plane_normal = XYZ(0, 1, 0)
-            plane = Plane.CreateByNormalAndOrigin(plane_normal, first_start)
-            sketch_plane = SketchPlane.Create(doc, plane)
-            
-            for start_point, end_point in vertical_lines:
-                try:
-                    line = Line.CreateBound(start_point, end_point)
-                    doc.Create.NewModelCurve(line, sketch_plane)
-                    lines_created += 1
-                except Exception as e:
-                    if debug:
-                        print(f"    Error creating vertical line: {e}")
-        except Exception as e:
-            if debug:
-                print(f"    Error creating vertical sketch plane: {e}")
-    
-    # Create horizontal lines with a single shared sketch plane
-    if horizontal_lines:
-        try:
-            # Use Z-axis as normal for horizontal lines sketch plane
-            first_start = horizontal_lines[0][0]
-            plane_normal = XYZ(0, 0, 1)
-            plane = Plane.CreateByNormalAndOrigin(plane_normal, first_start)
-            sketch_plane = SketchPlane.Create(doc, plane)
-            
-            for start_point, end_point in horizontal_lines:
-                try:
-                    line = Line.CreateBound(start_point, end_point)
-                    doc.Create.NewModelCurve(line, sketch_plane)
-                    lines_created += 1
-                except Exception as e:
-                    if debug:
-                        print(f"    Error creating horizontal line: {e}")
-        except Exception as e:
-            if debug:
-                print(f"    Error creating horizontal sketch plane: {e}")
-    
-    if debug:
-        print(f"  Created {lines_created} debug lines ({len(vertical_lines)} vertical, {len(horizontal_lines)} horizontal)")
-    
-    return lines_created
+        else:
+            # For non-vertical lines, use Z cross line_direction
+            plane_normal = XYZ.BasisZ.CrossProduct(line_direction).Normalize()
+        
+        plane = Plane.CreateByNormalAndOrigin(plane_normal, start_point)
+        sketch_plane = SketchPlane.Create(doc, plane)
+        
+        model_line = doc.Create.NewModelCurve(line, sketch_plane)
+        print(f"    Created debug line sucessfully: {model_line.Id.Value}")
+
+        return model_line
+    except Exception as e:
+        print(f"    Error creating debug line: {e}")
+        return None
 
 
 def evaluate_heights_at_grid(doc, intersector, boundary_loops, boundary_inset, z_height, max_ray_distance, debug=False, create_debug_lines=False, profile=False):
@@ -703,7 +684,7 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, boundary_inset, z
     down_direction = XYZ(0, 0, -1)
     
     debug_count = 0
-    debug_line_endpoints = []  # Collect line endpoints for batch creation
+    debug_lines_created = 0
     
     # Profiling accumulators
     t_ray_cast_total = 0.0
@@ -766,12 +747,13 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, boundary_inset, z
             floor_dist = None
             floor_point = None
 
-        # Collect debug line endpoints for batch creation
+        # Create debug model lines for ray paths
         if create_debug_lines and ceiling_distance is not None:
             ceiling_point = XYZ(point.X, point.Y, point.Z + ceiling_distance)
-            # Collect line from floor to ceiling (the clear height measurement)
+            # Create line from floor to ceiling (the clear height measurement)
             if floor_point is not None:
-                debug_line_endpoints.append((floor_point, ceiling_point))
+                create_debug_model_line(doc, floor_point, ceiling_point)
+                debug_lines_created += 1
 
         if debug and debug_count < 3:
             ceiling_str = f"{ceiling_distance * 0.3048:.2f}" if ceiling_distance is not None else "None"
@@ -796,10 +778,8 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, boundary_inset, z
         other_time = (t_loop_end - t_loop_start) - t_ray_cast_total - t_hit_process_total
         print(f"  [PROFILE]   - Other (loop overhead, height calc): {other_time:.3f}s ({other_time/(t_loop_end - t_loop_start)*100:.1f}%)")
     
-    # Create debug lines in batch (much faster than one at a time)
-    if create_debug_lines and debug_line_endpoints:
-        lines_created = create_debug_lines_batch(doc, debug_line_endpoints, debug=debug)
-        print(f"  Created {lines_created} debug model lines")
+    if create_debug_lines:
+        print(f"  Created {debug_lines_created} debug model lines")
     
     return clear_heights
 
@@ -854,8 +834,8 @@ def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, b
         if debug:
             print(f"  Creating debug lines for boundary...")
         
-        # Collect boundary line endpoints
-        boundary_line_endpoints = []
+        # Create boundary lines
+        boundary_lines_count = 0
         for loop in boundary_loops:
             for i in range(len(loop)):
                 p1 = loop[i]
@@ -863,10 +843,9 @@ def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, b
                 # Create points at calculation z_height
                 p1_z = XYZ(p1.X, p1.Y, z_height)
                 p2_z = XYZ(p2.X, p2.Y, z_height)
-                boundary_line_endpoints.append((p1_z, p2_z))
+                if create_debug_model_line(doc, p1_z, p2_z):
+                    boundary_lines_count += 1
         
-        # Create boundary lines in batch
-        boundary_lines_count = create_debug_lines_batch(doc, boundary_line_endpoints, debug=debug)
         if debug:
             print(f"  Created {boundary_lines_count} boundary debug lines")
 
@@ -943,12 +922,18 @@ def filter_heights_by_threshold(clear_heights, threshold, debug=False):
             break
     
     # Filter heights by threshold
-    # Include all heights that meet the threshold percentage
+    # If there's a dominant height, also require secondary heights to be significant (>20%)
+    # OR within 0.20m of the dominant height to filter out outliers like beams/ducts
     filtered_heights = []
     for representative, count in group_info:
         percentage = count / total_points
         if percentage >= threshold:
-            filtered_heights.append(representative)
+            if dominant_height is not None:
+                # Include if: significant (>20%) OR close to dominant (<0.20m)
+                if percentage > 0.20 or abs(representative - dominant_height) <= 0.20:
+                    filtered_heights.append(representative)
+            else:
+                filtered_heights.append(representative)
     
     # If all heights are filtered out, use the dominant height or all heights
     if not filtered_heights:
