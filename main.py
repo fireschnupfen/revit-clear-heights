@@ -17,7 +17,7 @@ __revit__: str
 
 # Grid spacing in feet (approximately 1m = ~3.28 feet)
 # Larger spacing = fewer points = faster computation
-GRID_SPACING = 3.28 * 0.8
+GRID_SPACING = 3.28 * 0.7
 
 # Minimum distance from boundary to avoid edge issues (in feet, ~10cm)
 BOUNDARY_INSET = 0.328
@@ -28,7 +28,7 @@ SIMPLIFICATION_ANGLE_TOLERANCE = 0.087
 
 # Threshold for filtering clear heights (7.6% = 0.076)
 # Heights representing less than 7.6% of the room area are filtered out
-THRESHOLD = 0.076
+THRESHOLD = 0.10
 
 def get_room_boundary_points(room, options):
     """Extract boundary curves from a room and return as list of boundary loops.
@@ -149,181 +149,6 @@ def simplify_boundary_loops(boundary_loops, angle_tolerance):
     return [simplify_boundary_loop(loop, angle_tolerance) for loop in boundary_loops]
 
 
-def is_point_in_polygon(px, py, polygon_points):
-    """Check if a point is inside a polygon using ray casting algorithm."""
-    n = len(polygon_points)
-    if n < 3:
-        return False
-    
-    inside = False
-    j = n - 1
-    for i in range(n):
-        xi, yi = polygon_points[i].X, polygon_points[i].Y
-        xj, yj = polygon_points[j].X, polygon_points[j].Y
-        
-        if ((yi > py) != (yj > py)) and \
-           (px < (xj - xi) * (py - yi) / (yj - yi) + xi):
-            inside = not inside
-        j = i
-    
-    return inside
-
-
-def point_to_segment_distance(px, py, x1, y1, x2, y2):
-    """Calculate distance from point to line segment."""
-    dx = x2 - x1
-    dy = y2 - y1
-    if dx == 0 and dy == 0:
-        return ((px - x1) ** 2 + (py - y1) ** 2) ** 0.5
-    t = max(0, min(1, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)))
-    proj_x = x1 + t * dx
-    proj_y = y1 + t * dy
-    return ((px - proj_x) ** 2 + (py - proj_y) ** 2) ** 0.5
-
-
-def min_distance_to_boundary(px, py, boundary_loops):
-    """Calculate minimum distance from point to any boundary edge in any loop."""
-    min_dist = float('inf')
-    for loop in boundary_loops:
-        n = len(loop)
-        for i in range(n):
-            x1, y1 = loop[i].X, loop[i].Y
-            x2, y2 = loop[(i + 1) % n].X, loop[(i + 1) % n].Y
-            dist = point_to_segment_distance(px, py, x1, y1, x2, y2)
-            if dist < min_dist:
-                min_dist = dist
-    return min_dist
-
-
-def calculate_height_ratios(clear_heights, tolerance=0.05):
-    """Calculate the ratio distribution of clear heights.
-    
-    Groups heights within tolerance and returns a dictionary of 
-    representative height -> ratio (percentage of total).
-    
-    Args:
-        clear_heights: List of clear heights in meters
-        tolerance: Heights within this tolerance are grouped together
-        
-    Returns:
-        Dictionary mapping representative height to its ratio (0-1)
-    """
-    if not clear_heights:
-        return {}
-    
-    sorted_heights = sorted(clear_heights)
-    
-    # Create groups of similar heights
-    groups = []
-    current_group = [sorted_heights[0]]
-    
-    for h in sorted_heights[1:]:
-        if h - current_group[0] <= tolerance:
-            current_group.append(h)
-        else:
-            groups.append(current_group)
-            current_group = [h]
-    groups.append(current_group)
-    
-    # Calculate ratios for each group
-    total_points = len(clear_heights)
-    ratios = {}
-    for group in groups:
-        # Use the mode (most common value) as representative
-        value_counts = {}
-        for v in group:
-            value_counts[v] = value_counts.get(v, 0) + 1
-        representative = max(value_counts.keys(), key=lambda x: value_counts[x])
-        ratios[representative] = len(group) / total_points
-    
-    return ratios
-
-
-def calculate_inset_direction(p_prev, p_curr, p_next):
-    """Calculate the inward direction at a corner point (bisector of the angle).
-    
-    Args:
-        p_prev: Previous point on boundary
-        p_curr: Current point (corner)
-        p_next: Next point on boundary
-        
-    Returns:
-        Tuple (dx, dy) representing the normalized inward direction
-    """
-    # Vectors along edges
-    v1x = p_curr.X - p_prev.X
-    v1y = p_curr.Y - p_prev.Y
-    v2x = p_next.X - p_curr.X
-    v2y = p_next.Y - p_curr.Y
-    
-    # Normalize vectors
-    len1 = (v1x**2 + v1y**2)**0.5
-    len2 = (v2x**2 + v2y**2)**0.5
-    
-    if len1 < 1e-10 or len2 < 1e-10:
-        return (0, 0)
-    
-    v1x, v1y = v1x/len1, v1y/len1
-    v2x, v2y = v2x/len2, v2y/len2
-    
-    # Inward normals (rotate 90 degrees clockwise for outer boundary)
-    n1x, n1y = v1y, -v1x
-    n2x, n2y = v2y, -v2x
-    
-    # Bisector direction (average of the two normals)
-    bx = n1x + n2x
-    by = n1y + n2y
-    blen = (bx**2 + by**2)**0.5
-    
-    if blen < 1e-10:
-        return (n1x, n1y)
-    
-    return (bx/blen, by/blen)
-
-
-def inset_boundary_loop(boundary_points, inset_distance):
-    """Create an inset version of a boundary loop.
-    
-    Args:
-        boundary_points: List of XYZ points forming the boundary
-        inset_distance: Distance to inset inward
-        
-    Returns:
-        List of XYZ points forming the inset boundary, or empty list if collapsed
-    """
-    n = len(boundary_points)
-    if n < 3:
-        return []
-    
-    inset_points = []
-    for i in range(n):
-        p_prev = boundary_points[(i - 1) % n]
-        p_curr = boundary_points[i]
-        p_next = boundary_points[(i + 1) % n]
-        
-        dx, dy = calculate_inset_direction(p_prev, p_curr, p_next)
-        
-        # Move point inward
-        new_x = p_curr.X + dx * inset_distance
-        new_y = p_curr.Y + dy * inset_distance
-        inset_points.append((new_x, new_y))
-    
-    # Check if the inset polygon is still valid (not self-intersecting or collapsed)
-    # Simple check: ensure area is positive and reasonable
-    area = 0
-    for i in range(len(inset_points)):
-        x1, y1 = inset_points[i]
-        x2, y2 = inset_points[(i + 1) % len(inset_points)]
-        area += (x2 - x1) * (y2 + y1)
-    area = abs(area) / 2
-    
-    # If area is too small, the polygon has collapsed
-    if area < inset_distance * inset_distance:
-        return []
-    
-    return inset_points
-
-
 def generate_points_along_boundary(boundary_points, segment_length, z_height):
     """Generate points along a boundary by dividing the entire perimeter into equal segments.
     
@@ -398,109 +223,6 @@ def generate_points_along_boundary(boundary_points, segment_length, z_height):
         points.append(XYZ(px, py, z_height))
         
     return points
-
-
-def create_grid_points_in_polygon(boundary_loops, inset_step_distance, segment_length, boundary_inset, z_height):
-    """Create points within the polygon using boundary inset approach.
-    
-    Points are generated by:
-    1. Starting at the boundary (inset by boundary_inset)
-    2. Creating points along the entire boundary (spaced by segment_length)
-    3. Insetting the boundary further by inset_step_distance and repeating
-    
-    Args:
-        boundary_loops: List of boundary loops (each loop is a list of points)
-        inset_step_distance: Distance between inset levels
-        segment_length: Target distance between points along the perimeter
-        boundary_inset: Initial inset distance from boundary
-        z_height: Z coordinate for all grid points
-    """
-    if not boundary_loops:
-        return []
-    
-    # First loop is the outer boundary
-    outer_boundary = boundary_loops[0]
-    # Remaining loops are holes (inner boundaries)
-    holes = boundary_loops[1:] if len(boundary_loops) > 1 else []
-    
-    all_points = []
-    
-    # Start with the outer boundary
-    current_boundary = [(p.X, p.Y) for p in outer_boundary]
-    
-    # Check if boundary points are clockwise or counter-clockwise
-    area = 0
-    for i in range(len(current_boundary)):
-        p1 = current_boundary[i]
-        p2 = current_boundary[(i + 1) % len(current_boundary)]
-        area += (p2[0] - p1[0]) * (p2[1] + p1[1])
-    
-    # If area > 0, it's clockwise, which might mean our inset logic (which expects CCW for inward)
-    # is actually outsetting. Let's ensure it's CCW.
-    if area > 0:
-        current_boundary.reverse()
-    
-    # Calculate initial perimeter for check
-    perimeter = 0
-    for i in range(len(current_boundary)):
-        x1, y1 = current_boundary[i]
-        x2, y2 = current_boundary[(i + 1) % len(current_boundary)]
-        perimeter += ((x2 - x1)**2 + (y2 - y1)**2)**0.5
-    
-    # Continue insetting until boundary collapses or becomes larger than original
-    initial_perimeter = perimeter
-    level = 0
-    previous_perimeter = initial_perimeter
-    
-    while True:
-        # Calculate inset distance for this level
-        current_inset_dist = boundary_inset + level * inset_step_distance
-        
-        # Inset the boundary from original
-        inset_boundary = inset_boundary_loop_tuples(current_boundary, current_inset_dist)
-        
-        if not inset_boundary:
-            break
-        
-        # Recalculate perimeter for this level
-        level_perimeter = 0
-        for i in range(len(inset_boundary)):
-            x1, y1 = inset_boundary[i]
-            x2, y2 = inset_boundary[(i + 1) % len(inset_boundary)]
-            level_perimeter += ((x2 - x1)**2 + (y2 - y1)**2)**0.5
-        
-        # Safety check: if inset boundary is larger than original or previous
-        if level > 0 and (level_perimeter > initial_perimeter or level_perimeter > previous_perimeter):
-            break
-        
-        previous_perimeter = level_perimeter
-        
-        # Generate points along this inset boundary
-        boundary_points = generate_points_along_boundary(inset_boundary, segment_length, z_height)
-        
-        # Filter out points that are inside holes
-        for point in boundary_points:
-            in_hole = False
-            for hole in holes:
-                if is_point_in_polygon(point.X, point.Y, hole):
-                    in_hole = True
-                    break
-            
-            if not in_hole:
-                # Also check minimum distance to holes
-                if holes:
-                    min_dist_to_hole = float('inf')
-                    for hole in holes:
-                        dist = min_distance_to_boundary_single(point.X, point.Y, hole)
-                        min_dist_to_hole = min(min_dist_to_hole, dist)
-                    if min_dist_to_hole < boundary_inset:
-                        continue
-                
-                all_points.append(point)
-        
-        level += 1
-    
-    return all_points
 
 
 def inset_boundary_loop_tuples(boundary_tuples, inset_distance):
@@ -593,29 +315,10 @@ def inset_boundary_loop_tuples(boundary_tuples, inset_distance):
     return inset_points
 
 
-def min_distance_to_boundary_single(px, py, boundary_points):
-    """Calculate minimum distance from point to a single boundary loop."""
-    min_dist = float('inf')
-    n = len(boundary_points)
-    for i in range(n):
-        p1 = boundary_points[i]
-        p2 = boundary_points[(i + 1) % n]
-        x1 = p1.X if hasattr(p1, 'X') else p1[0]
-        y1 = p1.Y if hasattr(p1, 'Y') else p1[1]
-        x2 = p2.X if hasattr(p2, 'X') else p2[0]
-        y2 = p2.Y if hasattr(p2, 'Y') else p2[1]
-        dist = point_to_segment_distance(px, py, x1, y1, x2, y2)
-        if dist < min_dist:
-            min_dist = dist
-    return min_dist
-
-
 def create_grid_points_bounding_box(boundary_loops, grid_spacing, boundary_inset, z_height, profile=False):
     """Create grid points within the polygon using a bounding box approach.
     
-    This is a performance-optimized alternative to create_grid_points_in_polygon.
-    Instead of following the boundary shape with insets, it creates a regular
-    rectangular grid and filters points to those inside the boundary.
+    Creates a regular rectangular grid and filters points to those inside the boundary.
     
     Additionally, points are generated along the first inset boundary curve to ensure
     the boundary edges are fully taken into account, including all corner points.
@@ -864,39 +567,88 @@ def find_closest_room_bounding_hit(doc, refs, max_distance, require_upward_norma
     return closest_distance, elem_info
 
 
-def create_debug_model_line(doc, start_point, end_point):
-    """Create a model line for debugging ray paths.
+def create_debug_lines_batch(doc, line_endpoints, debug=False):
+    """Create multiple model lines for debugging using shared sketch planes.
     
-    Creates a vertical model line by generating an appropriate sketch plane
-    for each line based on its position.
+    This is much faster than creating lines one at a time because it reuses
+    sketch planes for lines with similar orientations.
+    
+    Args:
+        doc: Revit document
+        line_endpoints: List of tuples (start_point, end_point) for each line
+        debug: Print debug information
+        
+    Returns:
+        Number of lines created successfully
     """
     from Autodesk.Revit.DB import Line, Plane, SketchPlane, XYZ
-    try:
-        line = Line.CreateBound(start_point, end_point)
-        
-        # For vertical lines, we need a vertical sketch plane
-        # Create a plane that contains the line - use a horizontal normal
-        # The plane normal should be perpendicular to the line direction
-        line_direction = (end_point - start_point).Normalize()
-        
-        # For vertical lines (Z direction), use X or Y as the normal
-        if abs(line_direction.Z) > 0.9:  # Nearly vertical
-            # Use Y-axis as normal for the sketch plane
+    
+    if not line_endpoints:
+        return 0
+    
+    lines_created = 0
+    
+    # Group lines by orientation: vertical vs horizontal
+    vertical_lines = []  # Lines with Z direction > 0.9
+    horizontal_lines = []  # Other lines
+    
+    for start_point, end_point in line_endpoints:
+        try:
+            direction = (end_point - start_point).Normalize()
+            if abs(direction.Z) > 0.9:
+                vertical_lines.append((start_point, end_point))
+            else:
+                horizontal_lines.append((start_point, end_point))
+        except:
+            pass
+    
+    # Create vertical lines with a single shared sketch plane
+    if vertical_lines:
+        try:
+            # Use Y-axis as normal for vertical lines sketch plane
+            # Use the first point as origin
+            first_start = vertical_lines[0][0]
             plane_normal = XYZ(0, 1, 0)
-        else:
-            # For non-vertical lines, use Z cross line_direction
-            plane_normal = XYZ.BasisZ.CrossProduct(line_direction).Normalize()
-        
-        plane = Plane.CreateByNormalAndOrigin(plane_normal, start_point)
-        sketch_plane = SketchPlane.Create(doc, plane)
-        
-        model_line = doc.Create.NewModelCurve(line, sketch_plane)
-        print(f"    Created debug line sucessfully: {model_line.Id.Value}")
-
-        return model_line
-    except Exception as e:
-        print(f"    Error creating debug line: {e}")
-        return None
+            plane = Plane.CreateByNormalAndOrigin(plane_normal, first_start)
+            sketch_plane = SketchPlane.Create(doc, plane)
+            
+            for start_point, end_point in vertical_lines:
+                try:
+                    line = Line.CreateBound(start_point, end_point)
+                    doc.Create.NewModelCurve(line, sketch_plane)
+                    lines_created += 1
+                except Exception as e:
+                    if debug:
+                        print(f"    Error creating vertical line: {e}")
+        except Exception as e:
+            if debug:
+                print(f"    Error creating vertical sketch plane: {e}")
+    
+    # Create horizontal lines with a single shared sketch plane
+    if horizontal_lines:
+        try:
+            # Use Z-axis as normal for horizontal lines sketch plane
+            first_start = horizontal_lines[0][0]
+            plane_normal = XYZ(0, 0, 1)
+            plane = Plane.CreateByNormalAndOrigin(plane_normal, first_start)
+            sketch_plane = SketchPlane.Create(doc, plane)
+            
+            for start_point, end_point in horizontal_lines:
+                try:
+                    line = Line.CreateBound(start_point, end_point)
+                    doc.Create.NewModelCurve(line, sketch_plane)
+                    lines_created += 1
+                except Exception as e:
+                    if debug:
+                        print(f"    Error creating horizontal line: {e}")
+        except Exception as e:
+            if debug:
+                print(f"    Error creating horizontal sketch plane: {e}")
+    
+    if debug:
+        print(f"  Created {lines_created} debug lines ({len(vertical_lines)} vertical, {len(horizontal_lines)} horizontal)")
+    
+    return lines_created
 
 
 def evaluate_heights_at_grid(doc, intersector, boundary_loops, boundary_inset, z_height, max_ray_distance, debug=False, create_debug_lines=False, profile=False):
@@ -951,7 +703,7 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, boundary_inset, z
     down_direction = XYZ(0, 0, -1)
     
     debug_count = 0
-    debug_lines_created = 0
+    debug_line_endpoints = []  # Collect line endpoints for batch creation
     
     # Profiling accumulators
     t_ray_cast_total = 0.0
@@ -1014,13 +766,12 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, boundary_inset, z
             floor_dist = None
             floor_point = None
 
-        # Create debug model lines for ray paths
+        # Collect debug line endpoints for batch creation
         if create_debug_lines and ceiling_distance is not None:
             ceiling_point = XYZ(point.X, point.Y, point.Z + ceiling_distance)
-            # Create line from floor to ceiling (the clear height measurement)
+            # Collect line from floor to ceiling (the clear height measurement)
             if floor_point is not None:
-                create_debug_model_line(doc, floor_point, ceiling_point)
-                debug_lines_created += 1
+                debug_line_endpoints.append((floor_point, ceiling_point))
 
         if debug and debug_count < 3:
             ceiling_str = f"{ceiling_distance * 0.3048:.2f}" if ceiling_distance is not None else "None"
@@ -1045,8 +796,10 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, boundary_inset, z
         other_time = (t_loop_end - t_loop_start) - t_ray_cast_total - t_hit_process_total
         print(f"  [PROFILE]   - Other (loop overhead, height calc): {other_time:.3f}s ({other_time/(t_loop_end - t_loop_start)*100:.1f}%)")
     
-    if create_debug_lines:
-        print(f"  Created {debug_lines_created} debug model lines")
+    # Create debug lines in batch (much faster than one at a time)
+    if create_debug_lines and debug_line_endpoints:
+        lines_created = create_debug_lines_batch(doc, debug_line_endpoints, debug=debug)
+        print(f"  Created {lines_created} debug model lines")
     
     return clear_heights
 
@@ -1101,8 +854,8 @@ def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, b
         if debug:
             print(f"  Creating debug lines for boundary...")
         
-        # Create boundary lines
-        boundary_lines_count = 0
+        # Collect boundary line endpoints
+        boundary_line_endpoints = []
         for loop in boundary_loops:
             for i in range(len(loop)):
                 p1 = loop[i]
@@ -1110,9 +863,10 @@ def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, b
                 # Create points at calculation z_height
                 p1_z = XYZ(p1.X, p1.Y, z_height)
                 p2_z = XYZ(p2.X, p2.Y, z_height)
-                if create_debug_model_line(doc, p1_z, p2_z):
-                    boundary_lines_count += 1
+                boundary_line_endpoints.append((p1_z, p2_z))
         
+        # Create boundary lines in batch
+        boundary_lines_count = create_debug_lines_batch(doc, boundary_line_endpoints, debug=debug)
         if debug:
             print(f"  Created {boundary_lines_count} boundary debug lines")
 
@@ -1189,20 +943,12 @@ def filter_heights_by_threshold(clear_heights, threshold, debug=False):
             break
     
     # Filter heights by threshold
+    # Include all heights that meet the threshold percentage
     filtered_heights = []
     for representative, count in group_info:
         percentage = count / total_points
         if percentage >= threshold:
-            # If there's a dominant height, only include heights within 0.20m of it
-            # This filters out outliers (like beams, ducts) while keeping intentional variations
-            if dominant_height is not None:
-                # Use a smaller window to be more strict about what's considered a variation
-                if abs(representative - dominant_height) <= 0.20:
-                    filtered_heights.append(representative)
-            else:
-                filtered_heights.append(representative)
-        elif percentage > 0.15: # Also include significant secondary heights even if below threshold? No, threshold IS for that.
-            pass
+            filtered_heights.append(representative)
     
     # If all heights are filtered out, use the dominant height or all heights
     if not filtered_heights:
