@@ -15,9 +15,15 @@ except ImportError:
 
 __revit__: str
 
-# Grid spacing in feet (approximately 1m = ~3.28 feet)
-# Larger spacing = fewer points = faster computation
-GRID_SPACING = 3.28 * 0.8
+# Adaptive grid spacing based on room area (in feet)
+# Small rooms use finer grid, large rooms use coarser grid
+GRID_SPACING_MIN = 3.28 * 0.5  # ~0.5m for small rooms
+GRID_SPACING_MAX = 3.28 * 1.5  # ~1.5m for large rooms
+
+# Room area thresholds for grid spacing interpolation (in square feet)
+# 1 m² ≈ 10.76 ft²
+AREA_MIN = 10.76 * 10   # 10 m² - rooms smaller than this use GRID_SPACING_MIN
+AREA_MAX = 10.76 * 100  # 100 m² - rooms larger than this use GRID_SPACING_MAX
 
 # Minimum distance from boundary to avoid edge issues (in feet, ~10cm)
 BOUNDARY_INSET = 0.328
@@ -29,6 +35,29 @@ SIMPLIFICATION_ANGLE_TOLERANCE = 0.087
 # Threshold for filtering clear heights (7.6% = 0.076)
 # Heights representing less than 7.6% of the room area are filtered out
 THRESHOLD = 0.08
+
+
+def calculate_adaptive_grid_spacing(room_area):
+    """Calculate grid spacing based on room area.
+    
+    Interpolates between GRID_SPACING_MIN and GRID_SPACING_MAX based on room area.
+    Small rooms get finer grids, large rooms get coarser grids.
+    
+    Args:
+        room_area: Room area in square feet
+        
+    Returns:
+        Grid spacing in feet
+    """
+    if room_area <= AREA_MIN:
+        return GRID_SPACING_MIN
+    elif room_area >= AREA_MAX:
+        return GRID_SPACING_MAX
+    else:
+        # Linear interpolation between min and max
+        t = (room_area - AREA_MIN) / (AREA_MAX - AREA_MIN)
+        return GRID_SPACING_MIN + t * (GRID_SPACING_MAX - GRID_SPACING_MIN)
+
 
 def get_room_boundary_points(room, options):
     """Extract boundary curves from a room and return as list of boundary loops.
@@ -632,7 +661,7 @@ def create_debug_model_line(doc, start_point, end_point):
         return None
 
 
-def evaluate_heights_at_grid(doc, intersector, boundary_loops, boundary_inset, z_height, max_ray_distance, debug=False, create_debug_lines=False, profile=False):
+def evaluate_heights_at_grid(doc, intersector, boundary_loops, grid_spacing, boundary_inset, z_height, max_ray_distance, debug=False, create_debug_lines=False, profile=False):
     """Evaluate clear heights at grid points within a room boundary.
     
     This is the core evaluation function that casts rays at each grid point.
@@ -641,6 +670,7 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, boundary_inset, z
         doc: Revit document
         intersector: ReferenceIntersector for ray casting
         boundary_loops: List of boundary loops from get_room_boundary_points
+        grid_spacing: Distance between grid points (adaptive based on room area)
         boundary_inset: Minimum distance from boundary
         z_height: Z coordinate for grid points
         max_ray_distance: Maximum ray cast distance
@@ -665,9 +695,9 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, boundary_inset, z
     
     # Create grid points within the room boundary using bounding box approach
     # This is much faster for complex boundaries as it's O(grid_size) instead of O(vertices * inset_levels)
-    # Use GRID_SPACING constant for optimal performance (larger spacing = fewer points = faster)
+    # Grid spacing is adaptive based on room area (smaller rooms get finer grids)
     t_grid_start = time.time()
-    grid_points = create_grid_points_bounding_box(boundary_loops, GRID_SPACING, boundary_inset, z_height, profile=profile)
+    grid_points = create_grid_points_bounding_box(boundary_loops, grid_spacing, boundary_inset, z_height, profile=profile)
     t_grid_end = time.time()
     if profile:
         print(f"  [PROFILE] Grid point generation: {t_grid_end - t_grid_start:.3f}s")
@@ -811,8 +841,14 @@ def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, b
     small_offset = 0.01  # ~3mm above floor level
     z_height = level_elevation + computation_height + small_offset
     
+    # Get room area and calculate adaptive grid spacing
+    room_area_param = room.get_Parameter(BuiltInParameter.ROOM_AREA)
+    room_area = room_area_param.AsDouble() if room_area_param else 0
+    grid_spacing = calculate_adaptive_grid_spacing(room_area)
+    
     if debug:
         print(f"  level_elevation={level_elevation * 0.3048:.2f}m, computation_height={computation_height * 0.3048:.2f}m, z_height={z_height * 0.3048:.2f}m")
+        print(f"  room_area={room_area * 0.0929:.1f}m², grid_spacing={grid_spacing * 0.3048:.2f}m")
     
     # Get room boundary loops
     boundary_loops = get_room_boundary_points(room, boundary_options)
@@ -821,7 +857,7 @@ def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, b
     
     # Evaluate heights using bounding box grid approach
     final_heights = evaluate_heights_at_grid(
-        doc, intersector, boundary_loops, boundary_inset,
+        doc, intersector, boundary_loops, grid_spacing, boundary_inset,
         z_height, max_ray_distance, debug=debug, 
         create_debug_lines=False,  # We'll create lines after if requested
         profile=profile
@@ -850,7 +886,7 @@ def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, b
         # Create ray path lines (floor to ceiling)
         if final_heights:
             evaluate_heights_at_grid(
-                doc, intersector, boundary_loops, boundary_inset,
+                doc, intersector, boundary_loops, grid_spacing, boundary_inset,
                 z_height, max_ray_distance, debug=False, create_debug_lines=True
             )
     

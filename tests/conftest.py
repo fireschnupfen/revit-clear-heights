@@ -12,7 +12,7 @@ def revit_session():
     end_session()
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="session", autouse=False)
 @revit
 def transaction_group():
     """Create a transaction group that will be rolled back after each test."""

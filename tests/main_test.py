@@ -22,12 +22,30 @@ def set_clear_heights(room_id):
     uidoc.Selection.SetElementIds(ids)
 
     room = uidoc.Document.GetElement(id)
-    main(create_debug_lines=True)
+    main(debug=True, create_debug_lines=False)
 
-    return(room.LookupParameter("Lichte_Raumhöhe").AsString(), room.LookupParameter("CLEAR_HEIGHT_VALIDATION").AsString())
+    return room.LookupParameter("Lichte_Raumhöhe").AsString()
 
 
-@pytest.mark.parametrize("room_id", [5498143,11398635,58817722,11129429,5850929,6477863,7609512,10843640])
-def test_calculate_clear_heights(room_id):
-    value_calculated, value_actual = set_clear_heights(room_id)
-    assert value_calculated == value_actual
+# Test data: (room_id, expected_value)
+# Format: "X,XXX m" or "X,XXX m - Y,YYY m" (3 decimal places, space before m)
+TEST_ROOMS = [
+    (5852412, "3,130 m"),
+    (5139071, "2,600 m - 2,630 m"),
+    (5498143, "2,600 m"),
+    (5850933, "3,200 m"),
+    (11398635, "3,100 m"),
+    (58817722, "3,410 m"),
+    (11129429, "5,475 m"),
+    (5850929, "3,170 m"),
+    (6477863, "2,660 m"),
+    (7609512, "4,760 m - 8,260 m"),
+    (10843640, "4,760 m"),
+    (6457698, "3,410 m - 4,010 m"),
+]
+
+
+@pytest.mark.parametrize("room_id,expected", TEST_ROOMS)
+def test_calculate_clear_heights(transaction_group, room_id, expected):
+    value_calculated = set_clear_heights(room_id)
+    assert value_calculated == expected
