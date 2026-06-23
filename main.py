@@ -15,7 +15,7 @@ __revit__: str
 
 # Base grid spacing in feet (approximately 0.5m = ~1.64 feet)
 # This serves as the finest grid spacing - coarser grids will be multiples of this
-BASE_GRID_SPACING = 0.328 * 20
+BASE_GRID_SPACING = 0.328 * 30
 
 # Minimum distance from boundary to avoid edge issues (in feet, ~10cm)
 BOUNDARY_INSET = 0.328
@@ -26,7 +26,7 @@ THRESHOLD = 0.076
 
 # Convergence threshold for adaptive grid refinement
 # If height ratios differ by less than this, consider converged
-CONVERGENCE_THRESHOLD = 0.02  # 2% difference allowed
+CONVERGENCE_THRESHOLD = 0.005  # 2% difference allowed
 
 # Maximum grid refinement iterations
 MAX_REFINEMENT_ITERATIONS = 4
@@ -443,7 +443,7 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, grid_spacing, bou
             floor_info = None
             floor_dist = None
             floor_point = None
-        
+
         # Create debug model lines for ray paths
         if create_debug_lines and ceiling_distance is not None:
             ceiling_point = XYZ(point.X, point.Y, point.Z + ceiling_distance)
@@ -451,14 +451,15 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, grid_spacing, bou
             if floor_point is not None:
                 create_debug_model_line(doc, floor_point, ceiling_point)
                 debug_lines_created += 1
-        
+
         if debug and debug_count < 3:
-            ceiling_m = ceiling_distance * 0.3048 if ceiling_distance else None
-            floor_m = floor_dist * 0.3048 if floor_dist is not None else None
-            clear_m = clear_height * 0.3048 if clear_height else None
-            print(f"  Point {debug_count}: ceiling={ceiling_m:.2f}m ({ceiling_info}), floor={floor_m:.2f}m ({floor_info}), clear={clear_m:.2f}m")
+            ceiling_str = f"{ceiling_distance * 0.3048:.2f}" if ceiling_distance is not None else "None"
+            floor_str = f"{floor_dist * 0.3048:.2f}" if floor_dist is not None else "None"
+            clear_str = f"{clear_height * 0.3048:.2f}" if clear_height is not None else "None"
+            print(
+                f"  Point {debug_count}: ceiling={ceiling_str}m ({ceiling_info}), floor={floor_str}m ({floor_info}), clear={clear_str}m")
             debug_count += 1
-        
+
         # Add clear height if valid
         if clear_height is not None and clear_height > 0:
             # Convert from feet to meters and round to 2 decimal places
