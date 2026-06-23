@@ -17,7 +17,7 @@ __revit__: str
 
 # Grid spacing in feet (approximately 1m = ~3.28 feet)
 # Larger spacing = fewer points = faster computation
-GRID_SPACING = 3.28 * 1.2
+GRID_SPACING = 3.28 * 0.8
 
 # Minimum distance from boundary to avoid edge issues (in feet, ~10cm)
 BOUNDARY_INSET = 0.328
@@ -686,18 +686,15 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, boundary_inset, z
     debug_count = 0
     debug_lines_created = 0
     
+    # Track seen height groups for debug output (first point of each unique height)
+    seen_height_groups = set()  # Heights rounded to 0.05m for grouping
+    
     # Profiling accumulators
     t_ray_cast_total = 0.0
     t_hit_process_total = 0.0
     
     t_loop_start = time.time()
     for point in grid_points:
-        should_debug = debug and debug_count < 1
-        
-        if should_debug:
-            print(f"  --- Point {debug_count} at z={point.Z * 0.3048:.2f}m ---")
-            print(f"  Casting UP:")
-        
         # Cast ray upward - we need to find both:
         # 1. The floor's top surface (upward-facing normal) - this is where we measure FROM
         # 2. The ceiling's bottom surface (downward-facing normal) - this is where we measure TO
@@ -707,15 +704,12 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, boundary_inset, z
         
         # Find ceiling (downward-facing normal)
         t_hit_start = time.time()
-        ceiling_distance, ceiling_info = find_closest_room_bounding_hit(doc, up_refs, max_ray_distance, require_upward_normal=False, debug=should_debug)
+        ceiling_distance, ceiling_info = find_closest_room_bounding_hit(doc, up_refs, max_ray_distance, require_upward_normal=False, debug=False)
         
         # Find floor top surface above us (upward-facing normal) - this handles cases where
         # we start slightly below the floor surface
-        floor_top_distance, floor_top_info = find_closest_room_bounding_hit(doc, up_refs, max_ray_distance, require_upward_normal=True, debug=should_debug)
+        floor_top_distance, floor_top_info = find_closest_room_bounding_hit(doc, up_refs, max_ray_distance, require_upward_normal=True, debug=False)
         t_hit_process_total += time.time() - t_hit_start
-        
-        if should_debug:
-            print(f"  Casting DOWN:")
         
         # Cast ray downward - find floor's top surface (upward-facing normal)
         t_ray_start = time.time()
@@ -723,7 +717,7 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, boundary_inset, z
         t_ray_cast_total += time.time() - t_ray_start
         
         t_hit_start = time.time()
-        floor_below_distance, floor_below_info = find_closest_room_bounding_hit(doc, down_refs, max_ray_distance, require_upward_normal=True, debug=should_debug)
+        floor_below_distance, floor_below_info = find_closest_room_bounding_hit(doc, down_refs, max_ray_distance, require_upward_normal=True, debug=False)
         t_hit_process_total += time.time() - t_hit_start
         
         # Calculate clear height
@@ -755,19 +749,23 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, boundary_inset, z
                 create_debug_model_line(doc, floor_point, ceiling_point)
                 debug_lines_created += 1
 
-        if debug and debug_count < 3:
-            ceiling_str = f"{ceiling_distance * 0.3048:.2f}" if ceiling_distance is not None else "None"
-            floor_str = f"{floor_dist * 0.3048:.2f}" if floor_dist is not None else "None"
-            clear_str = f"{clear_height * 0.3048:.2f}" if clear_height is not None else "None"
-            print(
-                f"  Point {debug_count}: ceiling={ceiling_str}m ({ceiling_info}), floor={floor_str}m ({floor_info}), clear={clear_str}m")
-            debug_count += 1
-
         # Add clear height if valid
         if clear_height is not None and clear_height > 0:
             # Convert from feet to meters and round to 3 decimal places
             clear_height_m = round(clear_height * 0.3048, 3)
             clear_heights.append(clear_height_m)
+            
+            # Debug: Print first point of each unique height group (rounded to 0.05m)
+            if debug:
+                height_group = round(clear_height_m / 0.05) * 0.05  # Round to nearest 0.05m
+                if height_group not in seen_height_groups:
+                    seen_height_groups.add(height_group)
+                    ceiling_str = f"{ceiling_distance * 0.3048:.2f}" if ceiling_distance is not None else "None"
+                    floor_str = f"{floor_dist * 0.3048:.2f}" if floor_dist is not None else "None"
+                    print(f"  First point with height ~{height_group:.2f}m:")
+                    print(f"    Clear height: {clear_height_m:.3f}m")
+                    print(f"    Ceiling: {ceiling_str}m - {ceiling_info}")
+                    print(f"    Floor: {floor_str}m - {floor_info}")
     
     t_loop_end = time.time()
     
