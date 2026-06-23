@@ -953,6 +953,7 @@ def format_clear_height_result(filtered_heights):
     """Format clear heights as string with German locale (comma as decimal separator).
     
     Returns single value if all heights are the same, or range if different.
+    Format: "2,431 m" or "2,431 m - 3,231 m" (3 decimal places, space before m)
     """
     if not filtered_heights:
         return ""
@@ -960,11 +961,11 @@ def format_clear_height_result(filtered_heights):
     unique_heights = sorted(set(filtered_heights))
     
     if len(unique_heights) == 1:
-        return f"{unique_heights[0]:.2f}m".replace(".", ",")
+        return f"{unique_heights[0]:.3f} m".replace(".", ",")
     else:
         min_height = min(unique_heights)
         max_height = max(unique_heights)
-        return f"{min_height:.2f}m - {max_height:.2f}m".replace(".", ",")
+        return f"{min_height:.3f} m - {max_height:.3f} m".replace(".", ",")
 
 
 @revit
