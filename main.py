@@ -14,8 +14,11 @@ except ImportError:
 __revit__: str
 
 # Base grid spacing in feet (approximately 0.5m = ~1.64 feet)
-# This serves as the finest grid spacing - coarser grids will be multiples of this
-BASE_GRID_SPACING = 0.328 * 30
+# Distance by which the boundary is inset at each level
+INSET_STEP_DISTANCE = 1.64
+
+# Target length for each segment when dividing the boundary for point generation
+SEGMENT_LENGTH = 1.64
 
 # Minimum distance from boundary to avoid edge issues (in feet, ~10cm)
 BOUNDARY_INSET = 0.328
@@ -23,19 +26,6 @@ BOUNDARY_INSET = 0.328
 # Threshold for filtering clear heights (7.6% = 0.076)
 # Heights representing less than 7.6% of the room area are filtered out
 THRESHOLD = 0.076
-
-# Convergence threshold for adaptive grid refinement
-# If height ratios differ by less than this, consider converged
-CONVERGENCE_THRESHOLD = 0.005  # 2% difference allowed
-
-# Maximum grid refinement iterations
-MAX_REFINEMENT_ITERATIONS = 4
-
-# Initial coarse grid multiplier (start with grid this many times larger than base)
-INITIAL_GRID_MULTIPLIER = 4
-
-# Initial coarse grid multiplier (start with grid this many times larger than base)
-MINIMAL_GRID_MULTIPLIER = 0.5
 
 def get_room_boundary_points(room, options):
     """Extract boundary curves from a room and return as list of boundary loops.
@@ -149,57 +139,180 @@ def calculate_height_ratios(clear_heights, tolerance=0.05):
     return ratios
 
 
-def compare_height_ratios(ratios1, ratios2, threshold=0.02):
-    """Compare two height ratio distributions for convergence.
+def calculate_inset_direction(p_prev, p_curr, p_next):
+    """Calculate the inward direction at a corner point (bisector of the angle).
     
     Args:
-        ratios1: First ratio dictionary (height -> ratio)
-        ratios2: Second ratio dictionary (height -> ratio)
-        threshold: Maximum allowed difference in ratios
+        p_prev: Previous point on boundary
+        p_curr: Current point (corner)
+        p_next: Next point on boundary
         
     Returns:
-        True if the distributions are similar enough (converged)
+        Tuple (dx, dy) representing the normalized inward direction
     """
-    if not ratios1 or not ratios2:
-        return False
+    # Vectors along edges
+    v1x = p_curr.X - p_prev.X
+    v1y = p_curr.Y - p_prev.Y
+    v2x = p_next.X - p_curr.X
+    v2y = p_next.Y - p_curr.Y
     
-    # Get all unique heights from both distributions
-    all_heights = set(ratios1.keys()) | set(ratios2.keys())
+    # Normalize vectors
+    len1 = (v1x**2 + v1y**2)**0.5
+    len2 = (v2x**2 + v2y**2)**0.5
     
-    # For each height, check if the ratio difference is within threshold
-    for height in all_heights:
-        ratio1 = ratios1.get(height, 0)
-        ratio2 = ratios2.get(height, 0)
-        
-        # Find matching height in the other distribution (within tolerance)
-        if height not in ratios1:
-            # Try to find a close match
-            for h1 in ratios1:
-                if abs(h1 - height) <= 0.05:
-                    ratio1 = ratios1[h1]
-                    break
-        if height not in ratios2:
-            for h2 in ratios2:
-                if abs(h2 - height) <= 0.05:
-                    ratio2 = ratios2[h2]
-                    break
-        
-        if abs(ratio1 - ratio2) > threshold:
-            return False
+    if len1 < 1e-10 or len2 < 1e-10:
+        return (0, 0)
     
-    return True
+    v1x, v1y = v1x/len1, v1y/len1
+    v2x, v2y = v2x/len2, v2y/len2
+    
+    # Inward normals (rotate 90 degrees clockwise for outer boundary)
+    n1x, n1y = v1y, -v1x
+    n2x, n2y = v2y, -v2x
+    
+    # Bisector direction (average of the two normals)
+    bx = n1x + n2x
+    by = n1y + n2y
+    blen = (bx**2 + by**2)**0.5
+    
+    if blen < 1e-10:
+        return (n1x, n1y)
+    
+    return (bx/blen, by/blen)
 
 
-def create_grid_points_in_polygon(boundary_loops, grid_spacing, boundary_inset, z_height):
-    """Create a dense grid of points within the polygon boundary at given z height.
+def inset_boundary_loop(boundary_points, inset_distance):
+    """Create an inset version of a boundary loop.
     
-    Points are placed at least boundary_inset distance from any edge.
-    Handles multiple boundary loops: first loop is outer boundary, rest are holes.
+    Args:
+        boundary_points: List of XYZ points forming the boundary
+        inset_distance: Distance to inset inward
+        
+    Returns:
+        List of XYZ points forming the inset boundary, or empty list if collapsed
+    """
+    n = len(boundary_points)
+    if n < 3:
+        return []
+    
+    inset_points = []
+    for i in range(n):
+        p_prev = boundary_points[(i - 1) % n]
+        p_curr = boundary_points[i]
+        p_next = boundary_points[(i + 1) % n]
+        
+        dx, dy = calculate_inset_direction(p_prev, p_curr, p_next)
+        
+        # Move point inward
+        new_x = p_curr.X + dx * inset_distance
+        new_y = p_curr.Y + dy * inset_distance
+        inset_points.append((new_x, new_y))
+    
+    # Check if the inset polygon is still valid (not self-intersecting or collapsed)
+    # Simple check: ensure area is positive and reasonable
+    area = 0
+    for i in range(len(inset_points)):
+        x1, y1 = inset_points[i]
+        x2, y2 = inset_points[(i + 1) % len(inset_points)]
+        area += (x2 - x1) * (y2 + y1)
+    area = abs(area) / 2
+    
+    # If area is too small, the polygon has collapsed
+    if area < inset_distance * inset_distance:
+        return []
+    
+    return inset_points
+
+
+def generate_points_along_boundary(boundary_points, segment_length, z_height):
+    """Generate points along a boundary by dividing the entire perimeter into equal segments.
+    
+    Args:
+        boundary_points: List of (x, y) tuples or XYZ points forming a closed loop
+        segment_length: Target distance between points
+        z_height: Z coordinate for all points
+        
+    Returns:
+        List of XYZ points along the boundary
+    """
+    points = []
+    n = len(boundary_points)
+    if n < 2:
+        return points
+        
+    # Get total perimeter and edge lengths
+    edges = []
+    total_perimeter = 0
+    for i in range(n):
+        p1 = boundary_points[i]
+        p2 = boundary_points[(i + 1) % n]
+        
+        x1 = p1.X if hasattr(p1, 'X') else p1[0]
+        y1 = p1.Y if hasattr(p1, 'Y') else p1[1]
+        x2 = p2.X if hasattr(p2, 'X') else p2[0]
+        y2 = p2.Y if hasattr(p2, 'Y') else p2[1]
+        
+        length = ((x2 - x1)**2 + (y2 - y1)**2)**0.5
+        if length > 1e-10:
+            edges.append({'p1': (x1, y1), 'p2': (x2, y2), 'len': length})
+            total_perimeter += length
+            
+    if not edges or total_perimeter < 1e-10:
+        return points
+        
+    # Pre-calculate cumulative distances
+    cum_distances = [0.0]
+    accum = 0
+    for edge in edges:
+        accum += edge['len']
+        cum_distances.append(accum)
+        
+    # Target number of points based on perimeter
+    num_points = max(1, int(round(total_perimeter / segment_length)))
+    # Actual spacing to close the loop perfectly
+    actual_spacing = total_perimeter / num_points
+    
+    current_edge_idx = 0
+    
+    for i in range(num_points):
+        # Current distance from start of perimeter
+        target_dist = i * actual_spacing
+        
+        # Find the edge that contains this distance
+        # We can keep incrementing current_edge_idx since target_dist is non-decreasing
+        while current_edge_idx < len(edges) and cum_distances[current_edge_idx + 1] < target_dist - 1e-8:
+            current_edge_idx += 1
+            
+        if current_edge_idx >= len(edges):
+             current_edge_idx = len(edges) - 1
+             
+        # Interpolate point on edge
+        edge = edges[current_edge_idx]
+        edge_start_dist = cum_distances[current_edge_idx]
+        dist_on_edge = target_dist - edge_start_dist
+        
+        t = max(0, min(1, dist_on_edge / edge['len']))
+        px = edge['p1'][0] + (edge['p2'][0] - edge['p1'][0]) * t
+        py = edge['p1'][1] + (edge['p2'][1] - edge['p1'][1]) * t
+        
+        points.append(XYZ(px, py, z_height))
+        
+    return points
+
+
+def create_grid_points_in_polygon(boundary_loops, inset_step_distance, segment_length, boundary_inset, z_height):
+    """Create points within the polygon using boundary inset approach.
+    
+    Points are generated by:
+    1. Starting at the boundary (inset by boundary_inset)
+    2. Creating points along the entire boundary (spaced by segment_length)
+    3. Insetting the boundary further by inset_step_distance and repeating
     
     Args:
         boundary_loops: List of boundary loops (each loop is a list of points)
-        grid_spacing: Distance between grid points
-        boundary_inset: Minimum distance from any boundary edge
+        inset_step_distance: Distance between inset levels
+        segment_length: Target distance between points along the perimeter
+        boundary_inset: Initial inset distance from boundary
         z_height: Z coordinate for all grid points
     """
     if not boundary_loops:
@@ -210,36 +323,191 @@ def create_grid_points_in_polygon(boundary_loops, grid_spacing, boundary_inset, 
     # Remaining loops are holes (inner boundaries)
     holes = boundary_loops[1:] if len(boundary_loops) > 1 else []
     
-    # Find bounding box of the outer polygon
-    min_x = min(p.X for p in outer_boundary)
-    max_x = max(p.X for p in outer_boundary)
-    min_y = min(p.Y for p in outer_boundary)
-    max_y = max(p.Y for p in outer_boundary)
+    all_points = []
     
-    # Generate grid points
-    grid_points = []
-    x = min_x + grid_spacing / 2
-    while x < max_x:
-        y = min_y + grid_spacing / 2
-        while y < max_y:
-            # Check if point is inside outer polygon
-            if is_point_in_polygon(x, y, outer_boundary):
-                # Check if point is outside all holes
-                in_hole = False
-                for hole in holes:
-                    if is_point_in_polygon(x, y, hole):
-                        in_hole = True
-                        break
+    # Start with the outer boundary
+    current_boundary = [(p.X, p.Y) for p in outer_boundary]
+    
+    # Check if boundary points are clockwise or counter-clockwise
+    area = 0
+    for i in range(len(current_boundary)):
+        p1 = current_boundary[i]
+        p2 = current_boundary[(i + 1) % len(current_boundary)]
+        area += (p2[0] - p1[0]) * (p2[1] + p1[1])
+    
+    # If area > 0, it's clockwise, which might mean our inset logic (which expects CCW for inward)
+    # is actually outsetting. Let's ensure it's CCW.
+    if area > 0:
+        current_boundary.reverse()
+    
+    # Calculate initial perimeter for check
+    perimeter = 0
+    for i in range(len(current_boundary)):
+        x1, y1 = current_boundary[i]
+        x2, y2 = current_boundary[(i + 1) % len(current_boundary)]
+        perimeter += ((x2 - x1)**2 + (y2 - y1)**2)**0.5
+    
+    # Continue insetting until boundary collapses or becomes larger than original
+    initial_perimeter = perimeter
+    level = 0
+    previous_perimeter = initial_perimeter
+    
+    while True:
+        # Calculate inset distance for this level
+        current_inset_dist = boundary_inset + level * inset_step_distance
+        
+        # Inset the boundary from original
+        inset_boundary = inset_boundary_loop_tuples(current_boundary, current_inset_dist)
+        
+        if not inset_boundary:
+            break
+        
+        # Recalculate perimeter for this level
+        level_perimeter = 0
+        for i in range(len(inset_boundary)):
+            x1, y1 = inset_boundary[i]
+            x2, y2 = inset_boundary[(i + 1) % len(inset_boundary)]
+            level_perimeter += ((x2 - x1)**2 + (y2 - y1)**2)**0.5
+        
+        # Safety check: if inset boundary is larger than original or previous
+        if level > 0 and (level_perimeter > initial_perimeter or level_perimeter > previous_perimeter):
+            break
+        
+        previous_perimeter = level_perimeter
+        
+        # Generate points along this inset boundary
+        boundary_points = generate_points_along_boundary(inset_boundary, segment_length, z_height)
+        
+        # Filter out points that are inside holes
+        for point in boundary_points:
+            in_hole = False
+            for hole in holes:
+                if is_point_in_polygon(point.X, point.Y, hole):
+                    in_hole = True
+                    break
+            
+            if not in_hole:
+                # Also check minimum distance to holes
+                if holes:
+                    min_dist_to_hole = float('inf')
+                    for hole in holes:
+                        dist = min_distance_to_boundary_single(point.X, point.Y, hole)
+                        min_dist_to_hole = min(min_dist_to_hole, dist)
+                    if min_dist_to_hole < boundary_inset:
+                        continue
                 
-                if not in_hole:
-                    # Check distance to all boundaries (outer + holes)
-                    dist_to_boundary = min_distance_to_boundary(x, y, boundary_loops)
-                    if dist_to_boundary >= boundary_inset:
-                        grid_points.append(XYZ(x, y, z_height))
-            y += grid_spacing
-        x += grid_spacing
+                all_points.append(point)
+        
+        level += 1
     
-    return grid_points
+    return all_points
+
+
+def inset_boundary_loop_tuples(boundary_tuples, inset_distance):
+    """Create an inset version of a boundary loop (using tuples).
+    
+    Args:
+        boundary_tuples: List of (x, y) tuples forming the boundary
+        inset_distance: Distance to inset inward
+        
+    Returns:
+        List of (x, y) tuples forming the inset boundary, or empty list if collapsed
+    """
+    n = len(boundary_tuples)
+    if n < 3:
+        return []
+    
+    inset_points = []
+    for i in range(n):
+        p_prev = boundary_tuples[(i - 1) % n]
+        p_curr = boundary_tuples[i]
+        p_next = boundary_tuples[(i + 1) % n]
+        
+        # Vectors along edges
+        v1x = p_curr[0] - p_prev[0]
+        v1y = p_curr[1] - p_prev[1]
+        v2x = p_next[0] - p_curr[0]
+        v2y = p_next[1] - p_curr[1]
+        
+        # Normalize vectors
+        len1 = (v1x**2 + v1y**2)**0.5
+        len2 = (v2x**2 + v2y**2)**0.5
+        
+        if len1 < 1e-10 or len2 < 1e-10:
+            inset_points.append(p_curr)
+            continue
+        
+        v1x, v1y = v1x/len1, v1y/len1
+        v2x, v2y = v2x/len2, v2y/len2
+        
+        # Inward normals (rotate 90 degrees counter-clockwise for outer boundary)
+        # For CW winding (typical in Revit), inward is to the left of the edge direction
+        n1x, n1y = -v1y, v1x
+        n2x, n2y = -v2y, v2x
+        
+        # Bisector direction (average of the two normals)
+        bx = n1x + n2x
+        by = n1y + n2y
+        blen = (bx**2 + by**2)**0.5
+        
+        if blen < 1e-10:
+            bx, by = n1x, n1y
+        else:
+            bx, by = bx/blen, by/blen
+        
+        # Calculate the actual inset distance along the bisector
+        # This accounts for the angle at the corner
+        dot = v1x * (-v2x) + v1y * (-v2y)
+        angle_factor = 1.0
+        if dot > -0.99:  # Not a straight line
+            # sin(half_angle) determines how much further we need to go
+            half_angle_sin = ((1 - dot) / 2) ** 0.5
+            if half_angle_sin > 0.1:
+                angle_factor = 1.0 / half_angle_sin
+                angle_factor = min(angle_factor, 3.0)  # Limit to avoid extreme values
+        
+        # Move point inward
+        new_x = p_curr[0] + bx * inset_distance * angle_factor
+        new_y = p_curr[1] + by * inset_distance * angle_factor
+        inset_points.append((new_x, new_y))
+    
+    # Check if the inset polygon is still valid (positive area)
+    area = 0
+    for i in range(len(inset_points)):
+        x1, y1 = inset_points[i]
+        x2, y2 = inset_points[(i + 1) % len(inset_points)]
+        area += (x2 - x1) * (y2 + y1)
+    
+    # For CCW winding, area should be negative; for CW, positive
+    # If sign flipped, polygon collapsed
+    original_area = 0
+    for i in range(len(boundary_tuples)):
+        x1, y1 = boundary_tuples[i]
+        x2, y2 = boundary_tuples[(i + 1) % len(boundary_tuples)]
+        original_area += (x2 - x1) * (y2 + y1)
+    
+    # If areas have different signs or new area is too small, polygon collapsed
+    if original_area * area < 0 or abs(area) < inset_distance * inset_distance * 0.1:
+        return []
+    
+    return inset_points
+
+
+def min_distance_to_boundary_single(px, py, boundary_points):
+    """Calculate minimum distance from point to a single boundary loop."""
+    min_dist = float('inf')
+    n = len(boundary_points)
+    for i in range(n):
+        p1 = boundary_points[i]
+        p2 = boundary_points[(i + 1) % n]
+        x1 = p1.X if hasattr(p1, 'X') else p1[0]
+        y1 = p1.Y if hasattr(p1, 'Y') else p1[1]
+        x2 = p2.X if hasattr(p2, 'X') else p2[0]
+        y2 = p2.Y if hasattr(p2, 'Y') else p2[1]
+        dist = point_to_segment_distance(px, py, x1, y1, x2, y2)
+        if dist < min_dist:
+            min_dist = dist
+    return min_dist
 
 
 def get_3d_view_by_name(doc, view_name):
@@ -363,7 +631,7 @@ def create_debug_model_line(doc, start_point, end_point):
         return None
 
 
-def evaluate_heights_at_grid(doc, intersector, boundary_loops, grid_spacing, boundary_inset, z_height, max_ray_distance, debug=False, create_debug_lines=False):
+def evaluate_heights_at_grid(doc, intersector, boundary_loops, inset_step_distance, segment_length, boundary_inset, z_height, max_ray_distance, debug=False, create_debug_lines=False):
     """Evaluate clear heights at grid points within a room boundary.
     
     This is the core evaluation function that casts rays at each grid point.
@@ -372,7 +640,8 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, grid_spacing, bou
         doc: Revit document
         intersector: ReferenceIntersector for ray casting
         boundary_loops: List of boundary loops from get_room_boundary_points
-        grid_spacing: Distance between grid points
+        inset_step_distance: Distance between inset levels
+        segment_length: Target distance between points along the perimeter
         boundary_inset: Minimum distance from boundary
         z_height: Z coordinate for grid points
         max_ray_distance: Maximum ray cast distance
@@ -382,13 +651,23 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, grid_spacing, bou
     Returns:
         List of clear heights in meters
     """
+    # Debug: Print boundary information
+    if debug and boundary_loops:
+        outer_boundary = boundary_loops[0]
+        print(f"  Boundary has {len(outer_boundary)} points:")
+        min_x = min(p.X for p in outer_boundary)
+        max_x = max(p.X for p in outer_boundary)
+        min_y = min(p.Y for p in outer_boundary)
+        max_y = max(p.Y for p in outer_boundary)
+        print(f"  Boundary bounding box: X=[{min_x * 0.3048:.2f}m, {max_x * 0.3048:.2f}m], Y=[{min_y * 0.3048:.2f}m, {max_y * 0.3048:.2f}m]")
+    
     # Create grid points within the room boundary
-    grid_points = create_grid_points_in_polygon(boundary_loops, grid_spacing, boundary_inset, z_height)
+    grid_points = create_grid_points_in_polygon(boundary_loops, inset_step_distance, segment_length, boundary_inset, z_height)
     if not grid_points:
         return []
     
     if debug:
-        print(f"  Generated {len(grid_points)} grid points (spacing={grid_spacing * 0.3048:.2f}m)")
+        print(f"  Generated {len(grid_points)} grid points")
     
     # Calculate clear heights at each grid point
     clear_heights = []
@@ -462,8 +741,8 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, grid_spacing, bou
 
         # Add clear height if valid
         if clear_height is not None and clear_height > 0:
-            # Convert from feet to meters and round to 2 decimal places
-            clear_height_m = round(clear_height * 0.3048, 2)
+            # Convert from feet to meters and round to 3 decimal places
+            clear_height_m = round(clear_height * 0.3048, 3)
             clear_heights.append(clear_height_m)
     
     if create_debug_lines:
@@ -472,19 +751,16 @@ def evaluate_heights_at_grid(doc, intersector, boundary_loops, grid_spacing, bou
     return clear_heights
 
 
-def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, base_grid_spacing, boundary_inset, max_ray_distance, debug=False, create_debug_lines=False):
-    """Calculate clear heights for a room using adaptive grid refinement.
-    
-    Starts with a coarse grid and progressively refines until the height
-    distribution ratios converge, ensuring we don't miss important details
-    while optimizing performance for different room sizes.
+def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, inset_step_distance, segment_length, boundary_inset, max_ray_distance, debug=False, create_debug_lines=False):
+    """Calculate clear heights for a room using boundary inset grid.
     
     Args:
         doc: Revit document
         room: Room element
         intersector: ReferenceIntersector for ray casting
         boundary_options: SpatialElementBoundaryOptions
-        base_grid_spacing: Base grid spacing (finest level)
+        inset_step_distance: Distance between inset levels
+        segment_length: Target distance between points along the perimeter
         boundary_inset: Minimum distance from boundary
         max_ray_distance: Maximum ray cast distance
         debug: Print debug information
@@ -513,67 +789,90 @@ def calculate_clear_heights_for_room(doc, room, intersector, boundary_options, b
     if not boundary_loops:
         return []
     
-    # Start with coarse grid and refine until convergence
-    current_multiplier = INITIAL_GRID_MULTIPLIER
-    previous_ratios = None
-    final_heights = []
+    # Calculate clear heights for this room
+    if debug:
+        print(f"  Calculating heights with inset_step_distance={inset_step_distance * 0.3048:.2f}m, segment_length={segment_length * 0.3048:.2f}m")
     
-    for iteration in range(MAX_REFINEMENT_ITERATIONS):
-        current_spacing = base_grid_spacing * current_multiplier
-        
-        if debug:
-            print(f"  Iteration {iteration + 1}: grid_spacing={current_spacing * 0.3048:.2f}m (multiplier={current_multiplier}x)")
-        
-        # Evaluate heights at current grid spacing
-        # Only create debug lines on the final iteration (when converged or last iteration)
-        heights = evaluate_heights_at_grid(
-            doc, intersector, boundary_loops, current_spacing, boundary_inset,
-            z_height, max_ray_distance, debug=(debug and iteration == 0), 
-            create_debug_lines=False  # We'll create lines after convergence
-        )
-        
-        if not heights:
-            if debug:
-                print(f"  No heights found at iteration {iteration + 1}")
-            # Try finer grid
-            current_multiplier = max(MINIMAL_GRID_MULTIPLIER, current_multiplier // 2)
-            continue
-        
-        # Calculate height ratios
-        current_ratios = calculate_height_ratios(heights)
-        
-        if debug:
-            print(f"  Ratios: {', '.join(f'{h:.2f}m:{r*100:.1f}%' for h, r in sorted(current_ratios.items()))}")
-        
-        # Check for convergence
-        if previous_ratios is not None:
-            if compare_height_ratios(previous_ratios, current_ratios, CONVERGENCE_THRESHOLD):
-                if debug:
-                    print(f"  Converged at iteration {iteration + 1}!")
-                final_heights = heights
-                break
-        
-        # Store for next iteration
-        previous_ratios = current_ratios
-        final_heights = heights
-        
-        # Refine grid (halve the multiplier, but don't go below 1)
-        if current_multiplier <= MINIMAL_GRID_MULTIPLIER:
-            if debug:
-                print(f"  Reached finest grid level")
-            break
-        current_multiplier = max(MINIMAL_GRID_MULTIPLIER, current_multiplier // 2)
+    # Evaluate heights
+    final_heights = evaluate_heights_at_grid(
+        doc, intersector, boundary_loops, inset_step_distance, segment_length, boundary_inset,
+        z_height, max_ray_distance, debug=debug, 
+        create_debug_lines=False  # We'll create lines after if requested
+    )
     
     # Create debug lines with the final grid spacing if requested
-    if create_debug_lines and final_heights:
+    if create_debug_lines:
         if debug:
-            print(f"  Creating debug lines with final grid...")
-        # Re-run with debug lines enabled at the converged spacing
-        final_spacing = base_grid_spacing * max(MINIMAL_GRID_MULTIPLIER, current_multiplier)
-        final_heights = evaluate_heights_at_grid(
-            doc, intersector, boundary_loops, final_spacing, boundary_inset,
-            z_height, max_ray_distance, debug=False, create_debug_lines=True
-        )
+            print(f"  Creating debug lines for boundary and insets...")
+        
+        # Create boundary lines
+        boundary_lines_count = 0
+        for loop in boundary_loops:
+            for i in range(len(loop)):
+                p1 = loop[i]
+                p2 = loop[(i + 1) % len(loop)]
+                # Create points at calculation z_height
+                p1_z = XYZ(p1.X, p1.Y, z_height)
+                p2_z = XYZ(p2.X, p2.Y, z_height)
+                if create_debug_model_line(doc, p1_z, p2_z):
+                    boundary_lines_count += 1
+        
+        if debug:
+            print(f"  Created {boundary_lines_count} boundary debug lines")
+
+        # Create lines for inset boundaries
+        inset_lines_count = 0
+        if boundary_loops:
+            outer_boundary = boundary_loops[0]
+            current_boundary_tuples = [(p.X, p.Y) for p in outer_boundary]
+            
+            # Use the same logic as in create_grid_points_in_polygon
+            initial_perimeter = 0
+            for i in range(len(current_boundary_tuples)):
+                x1, y1 = current_boundary_tuples[i]
+                x2, y2 = current_boundary_tuples[(i + 1) % len(current_boundary_tuples)]
+                initial_perimeter += ((x2 - x1)**2 + (y2 - y1)**2)**0.5
+            
+            level = 0
+            previous_perimeter = initial_perimeter
+            while True:
+                current_inset_dist = boundary_inset + level * inset_step_distance
+                inset_boundary = inset_boundary_loop_tuples(current_boundary_tuples, current_inset_dist)
+                
+                if not inset_boundary:
+                    break
+                
+                # Perimeter check for inset boundary
+                level_perimeter = 0
+                for i in range(len(inset_boundary)):
+                    x1, y1 = inset_boundary[i]
+                    x2, y2 = inset_boundary[(i + 1) % len(inset_boundary)]
+                    level_perimeter += ((x2 - x1)**2 + (y2 - y1)**2)**0.5
+                
+                if level > 0 and (level_perimeter > initial_perimeter or level_perimeter > previous_perimeter):
+                    break
+                
+                previous_perimeter = level_perimeter
+                
+                # Create lines for this inset level
+                for i in range(len(inset_boundary)):
+                    p1 = inset_boundary[i]
+                    p2 = inset_boundary[(i + 1) % len(inset_boundary)]
+                    p1_z = XYZ(p1[0], p1[1], z_height)
+                    p2_z = XYZ(p2[0], p2[1], z_height)
+                    if create_debug_model_line(doc, p1_z, p2_z):
+                        inset_lines_count += 1
+                level += 1
+        
+        if debug:
+            print(f"  Created {inset_lines_count} inset boundary debug lines")
+
+        if final_heights:
+            # Re-run to create the ray paths
+            evaluate_heights_at_grid(
+                doc, intersector, boundary_loops, inset_step_distance, segment_length, boundary_inset,
+                z_height, max_ray_distance, debug=False, create_debug_lines=True
+            )
     
     return final_heights
 
@@ -593,8 +892,9 @@ def filter_heights_by_threshold(clear_heights, threshold, debug=False):
     if not clear_heights:
         return []
     
-    # Group heights within tolerance (0.05m)
-    tolerance = 0.05
+    # Group heights within tolerance (0.01m instead of 0.05m for better precision)
+    # INCREASED: We still want to group 2.603 and 2.598 for example.
+    tolerance = 0.01
     sorted_heights = sorted(clear_heights)
     
     # Create groups of similar heights
@@ -647,10 +947,13 @@ def filter_heights_by_threshold(clear_heights, threshold, debug=False):
             # If there's a dominant height, only include heights within 0.25m of it
             # This filters out outliers (like beams, ducts) while keeping intentional variations
             if dominant_height is not None:
+                # Use a smaller window if we want to be more strict about what's considered a variation
                 if abs(representative - dominant_height) <= 0.25:
                     filtered_heights.append(representative)
             else:
                 filtered_heights.append(representative)
+        elif percentage > 0.15: # Also include significant secondary heights even if below threshold? No, threshold IS for that.
+            pass
     
     # If all heights are filtered out, use the dominant height or all heights
     if not filtered_heights:
@@ -685,7 +988,7 @@ def format_clear_height_result(filtered_heights):
 
 
 @revit
-def main(debug=True, create_debug_lines=False):
+def main(debug=False, create_debug_lines=False):
     doc = __revit__.ActiveUIDocument.Document
     uidoc = __revit__.ActiveUIDocument
     
@@ -736,7 +1039,7 @@ def main(debug=True, create_debug_lines=False):
             # Set create_debug_lines=True to visualize ray paths as model lines
             clear_heights = calculate_clear_heights_for_room(
                 doc, room, intersector, boundary_options,
-                BASE_GRID_SPACING, BOUNDARY_INSET, max_ray_distance, 
+                INSET_STEP_DISTANCE, SEGMENT_LENGTH, BOUNDARY_INSET, max_ray_distance, 
                 debug=debug, create_debug_lines=create_debug_lines
             )
             
@@ -755,6 +1058,10 @@ def main(debug=True, create_debug_lines=False):
             if param:
                 param.Set(result)
                 print(f"Room {room.Id}: {result}")
+                
+                # If room is room 10843640, output more info for debugging
+                if room.Id.Value == 10843640:
+                     print(f"DEBUG ROOM 10843640: {len(clear_heights)} points evaluated.")
             else:
                 print(f"Room {room.Id}: Parameter 'Lichte_Raumhöhe' not found.")
         
