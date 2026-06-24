@@ -96,29 +96,26 @@ def get_z_on_planar_face(face, x, y):
     return None
 
 
-def evaluate_face_pair(doc, floor_face, ceiling_face, room_poly, sketch_plane, z_height):
+def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, room_poly, sketch_plane, z_height):
     """
     Evaluates the 2D intersection of a floor face, ceiling face, and the room boundary.
     Draws the intersection and evaluates clear heights at the vertices.
     """
-    poly1 = get_face_polygon(floor_face)
-    poly2 = get_face_polygon(ceiling_face)
-
-    if not poly1 or not poly2:
+    if not floor_poly or not ceiling_poly or floor_poly.is_empty or ceiling_poly.is_empty:
         return 0, []
 
     # Perform the 3-way boolean intersection (Room ∩ Floor ∩ Ceiling)
-    intersection = room_poly.intersection(poly1).intersection(poly2)
+    intersection = room_poly.intersection(floor_poly).intersection(ceiling_poly)
 
     if intersection.is_empty:
         return 0, []
 
-    # Calculate and print the area percentage
+    # Calculate the area percentage
     room_area = room_poly.area
     intersection_area = intersection.area
+    area_pct = 0.0
     if room_area > 0:
         area_pct = (intersection_area / room_area) * 100
-        print(f"-> Found intersection overlapping {area_pct:.2f}% of the room area.")
 
     geoms = []
     if intersection.geom_type == 'Polygon':
@@ -175,6 +172,26 @@ def evaluate_face_pair(doc, floor_face, ceiling_face, room_poly, sketch_plane, z
             clear_height_ft = abs(z1 - z2)
             clear_height_m = clear_height_ft * 0.3048
             clear_heights.append(clear_height_m)
+
+    # Prepare the height string for the output
+    if clear_heights:
+        min_h = min(clear_heights)
+        max_h = max(clear_heights)
+        if abs(max_h - min_h) > 0.005:
+            height_str = f"{min_h:.3f}m - {max_h:.3f}m"
+        else:
+            height_str = f"{min_h:.3f}m"
+    else:
+        height_str = "None"
+
+    if room_area > 0:
+        print(f"-> Found intersection overlapping {area_pct:.2f}% of the room area. Clear height(s): {height_str}")
+
+    # Introduce threshold: exclude areas representing < 8.0% of the room from the final evaluation
+    # (they will still be drawn as curves for debugging, but not return heights)
+    if area_pct < 8.0:
+        print(f"   (Excluded from final evaluation as {area_pct:.2f}% < 8.0%)")
+        return lines_created, []
 
     return lines_created, clear_heights
 
@@ -240,15 +257,50 @@ def main():
         total_lines_created = 0
         all_clear_heights = []
 
+        # Pre-process floors: sort by Z descending (highest first) and subtract upper from lower
+        floors_data = []
+        for ref in floor_refs:
+            face = doc.GetElement(ref).GetGeometryObjectFromReference(ref)
+            poly = get_face_polygon(face)
+            if poly:
+                z = face.Origin.Z if hasattr(face, "Origin") else 0
+                floors_data.append({'face': face, 'poly': poly, 'z': z})
+
+        floors_data.sort(key=lambda x: x['z'], reverse=True)
+        accumulated_floors = None
+        for data in floors_data:
+            if accumulated_floors is not None:
+                data['poly'] = data['poly'].difference(accumulated_floors)
+                accumulated_floors = accumulated_floors.union(data['poly'])
+            else:
+                accumulated_floors = data['poly']
+
+        # Pre-process ceilings: sort by Z ascending (lowest first) and subtract lower from upper
+        ceilings_data = []
+        for ref in ceiling_refs:
+            face = doc.GetElement(ref).GetGeometryObjectFromReference(ref)
+            poly = get_face_polygon(face)
+            if poly:
+                z = face.Origin.Z if hasattr(face, "Origin") else 0
+                ceilings_data.append({'face': face, 'poly': poly, 'z': z})
+
+        ceilings_data.sort(key=lambda x: x['z'])
+        accumulated_ceilings = None
+        for data in ceilings_data:
+            if accumulated_ceilings is not None:
+                data['poly'] = data['poly'].difference(accumulated_ceilings)
+                accumulated_ceilings = accumulated_ceilings.union(data['poly'])
+            else:
+                accumulated_ceilings = data['poly']
+
         # Iterate through every combination of (floor face) and (ceiling face)
-        for floor_ref in floor_refs:
-            floor_face = doc.GetElement(floor_ref).GetGeometryObjectFromReference(floor_ref)
-
-            for ceiling_ref in ceiling_refs:
-                ceiling_face = doc.GetElement(ceiling_ref).GetGeometryObjectFromReference(ceiling_ref)
-
+        for floor_data in floors_data:
+            for ceiling_data in ceilings_data:
                 lines_created, heights = evaluate_face_pair(
-                    doc, floor_face, ceiling_face, room_poly, sketch_plane, z_height
+                    doc,
+                    floor_data['face'], floor_data['poly'],
+                    ceiling_data['face'], ceiling_data['poly'],
+                    room_poly, sketch_plane, z_height
                 )
 
                 total_lines_created += lines_created
