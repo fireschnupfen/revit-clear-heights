@@ -69,7 +69,7 @@ def get_closest_valid_ref(doc, refs, max_distance, require_upward_normal):
     return closest_ref
 
 
-def auto_find_room_faces(doc, room, z_height, room_poly, create_ray_lines=False, debug=False):
+def auto_find_room_faces(doc, room, z_height, room_poly, grid_spacing, create_ray_lines=False, debug=False):
     """Automatically find floor and ceiling faces for a given room using ray casting."""
     view_3d = get_3d_view_by_name(doc, "RAY_CASTING_VIEW")
     if not view_3d:
@@ -88,7 +88,6 @@ def auto_find_room_faces(doc, room, z_height, room_poly, create_ray_lines=False,
     unbounded_height = unbounded_height_param.AsDouble() if unbounded_height_param else 10
     max_ray_distance = unbounded_height * 1.5
 
-    grid_spacing = 1.5  # ~0.5m grid
     minx, miny, maxx, maxy = room_poly.bounds
     grid_points = []
 
@@ -348,7 +347,8 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
 
 
 @revit
-def main(debug=False, create_debug_lines=False, create_ray_lines=False):
+def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spacing_min_m=0.5, grid_spacing_max_m=1.5,
+         area_min_m2=10.0, area_max_m2=100.0):
     doc = __revit__.ActiveUIDocument.Document
     uidoc = __revit__.ActiveUIDocument
 
@@ -383,12 +383,30 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False):
             print("Could not extract valid boundaries from the room.")
         return
 
-    # 4. Start transaction and autoselect faces
+    # 4. Determine dynamic grid spacing
+    room_area_param = room.get_Parameter(BuiltInParameter.ROOM_AREA)
+    room_area_sqft = room_area_param.AsDouble() if room_area_param else 0
+    room_area_m2 = room_area_sqft * 0.092903
+
+    if room_area_m2 <= area_min_m2:
+        grid_spacing_m = grid_spacing_min_m
+    elif room_area_m2 >= area_max_m2:
+        grid_spacing_m = grid_spacing_max_m
+    else:
+        t = (room_area_m2 - area_min_m2) / (area_max_m2 - area_min_m2)
+        grid_spacing_m = grid_spacing_min_m + t * (grid_spacing_max_m - grid_spacing_min_m)
+
+    grid_spacing = grid_spacing_m * 3.28084  # convert to internal units (feet)
+
+    if debug:
+        print(f"Room area: {room_area_m2:.1f}m2 -> Adaptive Grid Spacing: {grid_spacing_m:.2f}m")
+
+    # 5. Start transaction and autoselect faces
     t = Transaction(doc, "Calculate Clear Heights")
     t.Start()
 
     try:
-        floor_refs, ceiling_refs = auto_find_room_faces(doc, room, z_height, room_poly,
+        floor_refs, ceiling_refs = auto_find_room_faces(doc, room, z_height, room_poly, grid_spacing,
                                                         create_ray_lines=create_ray_lines, debug=debug)
         if not floor_refs:
             if debug:
@@ -402,7 +420,7 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False):
             t.RollBack()
             return
 
-        # 5. Evaluate intersections and draw boundary overlaps
+        # 6. Evaluate intersections and draw boundary overlaps
         # Create a flat SketchPlane at the exact calculated z_height
         origin = XYZ(0, 0, z_height)
         plane = Plane.CreateByNormalAndOrigin(XYZ.BasisZ, origin)
@@ -466,7 +484,7 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False):
             print(
                 f"Success! Created {total_lines_created} model lines at Z={z_height * 0.3048:.3f}m showing the overlaps.")
 
-        # 6. Print the global minimum and maximum and write to parameter
+        # 7. Print the global minimum and maximum and write to parameter
         if all_clear_heights:
             min_ch = min(all_clear_heights)
             max_ch = max(all_clear_heights)
