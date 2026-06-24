@@ -1,6 +1,6 @@
 import pytest
 from revit_rpc import revit
-from main import main
+from calculate_clear_heights import main
 
 try:
     from System.Collections.Generic import List
