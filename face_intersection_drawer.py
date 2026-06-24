@@ -389,7 +389,7 @@ def get_room_face_pairs(doc, room, z_height, room_poly, grid_spacing, create_ray
         poly = get_face_polygon(face)
         if poly:
             z = face.Origin.Z if hasattr(face, "Origin") else 0
-            floors_data.append({'face': face, 'poly': poly, 'z': z, 'element_id': ref.ElementId.Value})
+            floors_data.append({'face': face, 'poly': poly, 'z': z, 'element_id': ref.ElementId.Value, 'ref': ref})
 
     floors_data.sort(key=lambda x: x['z'], reverse=True)
     accumulated_floors = None
@@ -407,7 +407,7 @@ def get_room_face_pairs(doc, room, z_height, room_poly, grid_spacing, create_ray
         poly = get_face_polygon(face)
         if poly:
             z = face.Origin.Z if hasattr(face, "Origin") else 0
-            ceilings_data.append({'face': face, 'poly': poly, 'z': z, 'element_id': ref.ElementId.Value})
+            ceilings_data.append({'face': face, 'poly': poly, 'z': z, 'element_id': ref.ElementId.Value, 'ref': ref})
 
     ceilings_data.sort(key=lambda x: x['z'])
     accumulated_ceilings = None

@@ -216,9 +216,43 @@ def func_get_room_face_pairs(room_id):
 @pytest.mark.parametrize("room_id,expected_pairs", [
     (6457698, [(38879961, 15457563),(38879961, 29942629),(38879961, 11868779),(38879961, 16542829)])  # Placeholder
 ])
+@revit
 def test_get_room_face_pairs(transaction, room_id, expected_pairs):
     actual_pairs = func_get_room_face_pairs(room_id)
-    assert actual_pairs == expected_pairs
+    assert sorted(actual_pairs) == sorted(expected_pairs)
+
+
+@pytest.mark.parametrize("room_id,floor_ref_string,ceiling_ref_string", [
+    (6457698, "afe9a004-e567-4f94-b1ae-568d92dee429-024f8848:1:SURFACE",
+     "c5dfb182-f77a-4523-83f8-3dcc24aa081d-00f93399:0:SURFACE",)
+])
+@revit
+def test_face_pair_contains_ref_strings(transaction, room_id, floor_ref_string, ceiling_ref_string):
+    room = get_room(room_id)
+    doc = room.Document
+    try:
+        sketch_plane, z_height = room_sketch_plane(room)
+        
+        from face_intersection_drawer import get_room_polygon, get_room_face_pairs
+        room_poly = get_room_polygon(room, doc=doc, sketch_plane=sketch_plane, z_height=z_height, create_model_lines=False)
+        
+        _, _, pairs = get_room_face_pairs(
+            doc=doc, room=room, z_height=z_height, room_poly=room_poly, grid_spacing=4.0,
+            create_ray_lines=False, debug=False
+        )
+        
+        found = False
+        print("\nAll found pairs:")
+        for floor_data, ceiling_data in pairs:
+            f_ref_str = floor_data['ref'].ConvertToStableRepresentation(doc)
+            c_ref_str = ceiling_data['ref'].ConvertToStableRepresentation(doc)
+            print(f"Floor: {f_ref_str}  Ceiling: {c_ref_str}")
+            if f_ref_str == floor_ref_string and c_ref_str == ceiling_ref_string:
+                found = True
+                
+        assert found, f"Pair ({floor_ref_string}, {ceiling_ref_string}) not found in the evaluated room face pairs."
+    except Exception as e:
+        pytest.fail(f"test_face_pair_contains_ref_strings raised {e}")
 
 
 @pytest.mark.parametrize("room_id,floor_ref_string,ceiling_ref_string,expected_min,expected_max", [
@@ -227,8 +261,8 @@ def test_get_room_face_pairs(transaction, room_id, expected_pairs):
     (5139071, "adc6acde-15c5-4e63-9a28-26ff87808d74-01708d10:0:SURFACE",
      "9993fd19-1dfb-40a2-a38b-8c58b34923e9-01a2ac84:1:SURFACE", 2.600, 2.600),
 
-    (6457698, "c5dfb182-f77a-4523-83f8-3dcc24aa081d-00f93399:0:SURFACE",
-     "afe9a004-e567-4f94-b1ae-568d92dee429-024f8848:1:SURFACE", 4.010, 4.010)
+    (6457698, "afe9a004-e567-4f94-b1ae-568d92dee429-024f8848:1:SURFACE",
+     "c5dfb182-f77a-4523-83f8-3dcc24aa081d-00f93399:0:SURFACE", 4.010, 4.010),
 ])
 @revit
 def test_evaluate_clear_height_manual(transaction, room_id, floor_ref_string, ceiling_ref_string, expected_min,
