@@ -163,7 +163,7 @@ def auto_find_room_faces(doc, room, z_height, room_poly, grid_spacing, create_ra
     return floor_refs, ceiling_refs
 
 
-def get_face_polygon(face):
+def get_face_polygon(face, doc=None, sketch_plane=None, z_height=0.0, create_model_lines=False):
     """Convert a Revit Face to a 2D Shapely Polygon ('shadow')."""
     loops = face.GetEdgesAsCurveLoops()
     if not loops:
@@ -175,6 +175,17 @@ def get_face_polygon(face):
         for curve in loop:
             pt = curve.GetEndPoint(0)
             points.append((pt.X, pt.Y))  # Drop the Z coordinate entirely
+            
+            if create_model_lines and doc and sketch_plane:
+                pt2 = curve.GetEndPoint(1)
+                p1 = XYZ(pt.X, pt.Y, z_height)
+                p2 = XYZ(pt2.X, pt2.Y, z_height)
+                if p1.DistanceTo(p2) > 0.005:
+                    try:
+                        line = Line.CreateBound(p1, p2)
+                        doc.Create.NewModelCurve(line, sketch_plane)
+                    except Exception:
+                        pass
 
         if len(points) >= 3:
             poly = ShapelyPolygon(points)
@@ -192,7 +203,7 @@ def get_face_polygon(face):
     return combined_poly
 
 
-def get_room_polygon(room):
+def get_room_polygon(room, doc=None, sketch_plane=None, z_height=0.0, create_model_lines=False):
     """Extract boundary curves from a room and convert to a 2D Shapely Polygon."""
     options = SpatialElementBoundaryOptions()
     options.SpatialElementBoundaryLocation = SpatialElementBoundaryLocation.Finish
