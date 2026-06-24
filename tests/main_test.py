@@ -11,23 +11,6 @@ except ImportError:
 __revit__: str
 
 
-@revit
-def set_clear_heights(room_id):
-    uidoc = __revit__.ActiveUIDocument
-
-    id = ElementId(room_id)
-
-    ids = List[ElementId]()
-    ids.Add(id)
-    uidoc.Selection.SetElementIds(ids)
-
-    room = uidoc.Document.GetElement(id)
-    main(debug=True, create_debug_lines=True, create_ray_lines=True, grid_spacing_min_m=0.5, grid_spacing_max_m=1.5,
-         area_min_m2=10.0, area_max_m2=100.0)
-
-    return room.LookupParameter("Lichte_Raumhöhe").AsString()
-
-
 # Test data : (room_id, expected_value)
 # Format: "X,XXX m" or "X,XXX m - Y,YYY m" (3 decimal places, space before m)
 TEST_ROOMS = [
@@ -58,6 +41,22 @@ TEST_ROOMS_PES = [
     (6457698, "3,410 m - 4,010 m"),
     (61816302, "3,190 m - 3,410 m")
 ]
+
+
+@revit
+def set_clear_heights(room_id):
+    uidoc = __revit__.ActiveUIDocument
+
+    id = ElementId(room_id)
+
+    ids = List[ElementId]()
+    ids.Add(id)
+    uidoc.Selection.SetElementIds(ids)
+
+    room = uidoc.Document.GetElement(id)
+    main(debug=True)
+
+    return room.LookupParameter("Lichte_Raumhöhe").AsString()
 
 
 @pytest.mark.parametrize("room_id,expected", TEST_ROOMS_PES)

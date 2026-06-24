@@ -482,7 +482,7 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
 
 
 @revit
-def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spacing_min_m=0.5, grid_spacing_max_m=1.5,
+def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spacing_min_m=1, grid_spacing_max_m=3,
          area_min_m2=10.0, area_max_m2=100.0):
     doc = __revit__.ActiveUIDocument.Document
     uidoc = __revit__.ActiveUIDocument
