@@ -420,20 +420,33 @@ def main():
                 total_lines_created += lines_created
                 all_clear_heights.extend(heights)
 
-        t.Commit()
-
         print(f"Success! Created {total_lines_created} model lines at Z={z_height * 0.3048:.3f}m showing the overlaps.")
 
-        # 6. Print the global minimum and maximum
+        # 6. Print the global minimum and maximum and write to parameter
         if all_clear_heights:
             min_ch = min(all_clear_heights)
             max_ch = max(all_clear_heights)
+
+            # Format the result with German locale (comma instead of decimal point)
+            if abs(max_ch - min_ch) < 0.005:
+                result = f"{min_ch:.3f} m".replace(".", ",")
+            else:
+                result = f"{min_ch:.3f} m - {max_ch:.3f} m".replace(".", ",")
+
             print("\n--- Clear Heights Summary ---")
             print(f"Evaluated {len(all_clear_heights)} valid points across all intersecting floor-ceiling pairs.")
-            print(f"Minimum Clear Height: {min_ch:.3f} m")
-            print(f"Maximum Clear Height: {max_ch:.3f} m")
+            print(f"Resulting Clear Height: {result}")
+
+            param = room.LookupParameter("Lichte_Raumhöhe")
+            if param:
+                param.Set(result)
+                print("Successfully updated parameter 'Lichte_Raumhöhe'.")
+            else:
+                print("Parameter 'Lichte_Raumhöhe' not found.")
         else:
             print("\nNo valid clear heights could be evaluated at the intersection vertices.")
+
+        t.Commit()
 
     except Exception as e:
         t.RollBack()
