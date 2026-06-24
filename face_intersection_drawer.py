@@ -170,16 +170,24 @@ def get_face_polygon(face, doc=None, sketch_plane=None, z_height=0.0, create_mod
         return None
 
     polys = []
-    for loop in loops:
+    print(f"DEBUG get_face_polygon loops count: {len(loops)}")
+    for i, loop in enumerate(loops):
         points = []
         for curve in loop:
             pts = curve.Tessellate()
-            for i in range(len(pts) - 1):
-                pt = pts[i]
-                points.append((pt.X, pt.Y))  # Drop the Z coordinate entirely
+            for pt in pts:
+                p = (pt.X, pt.Y)
+                if not points or points[-1] != p:
+                    points.append(p)
+        print(f"DEBUG loop {i} generated {len(points)} points")
 
         if len(points) >= 3:
+            # Check if start and end points match
+            if points[0] != points[-1]:
+                points.append(points[0])
+
             poly = ShapelyPolygon(points)
+            print(f"DEBUG poly {i} is_valid initially: {poly.is_valid}, area: {poly.area}")
             if not poly.is_valid:
                 poly = make_valid(poly)
             polys.append(poly)
@@ -187,12 +195,36 @@ def get_face_polygon(face, doc=None, sketch_plane=None, z_height=0.0, create_mod
     if not polys:
         return None
 
-    # Sort polys by area descending, so the largest (outer boundary) is first
+    # Separate into outer boundaries and holes.
+    # A polygon is a hole if it is completely contained within another polygon.
+    outer_polys = []
+    holes = []
+
+    # Sort by area descending so we can easily check containment (holes are smaller than outers)
     polys.sort(key=lambda p: p.area, reverse=True)
 
-    combined_poly = polys[0]
-    for hole in polys[1:]:
-        combined_poly = combined_poly.difference(hole)
+    for p in polys:
+        is_hole = False
+        for outer in outer_polys:
+            if outer.contains(p) or outer.covers(p):
+                holes.append(p)
+                is_hole = True
+                break
+        if not is_hole:
+            outer_polys.append(p)
+
+    # Perform differences for each outer poly with its containing holes
+    final_outers = []
+    for outer in outer_polys:
+        current_outer = outer
+        for hole in holes:
+            if current_outer.contains(hole) or current_outer.covers(hole):
+                current_outer = current_outer.difference(hole)
+        final_outers.append(current_outer)
+
+    # Union all the final outer polygons to create a MultiPolygon or Polygon
+    from shapely.ops import unary_union
+    combined_poly = unary_union(final_outers)
 
     if create_model_lines and doc and sketch_plane and combined_poly:
         draw_shapely_polygon(combined_poly, doc, sketch_plane, z_height)
@@ -215,9 +247,10 @@ def get_room_polygon(room, doc=None, sketch_plane=None, z_height=0.0, create_mod
         for segment in segment_list:
             curve = segment.GetCurve()
             pts = curve.Tessellate()
-            for i in range(len(pts) - 1):
-                pt = pts[i]
-                points.append((pt.X, pt.Y))
+            for pt in pts:
+                p = (pt.X, pt.Y)
+                if not points or points[-1] != p:
+                    points.append(p)
 
         if len(points) >= 3:
             poly = ShapelyPolygon(points)
@@ -228,12 +261,36 @@ def get_room_polygon(room, doc=None, sketch_plane=None, z_height=0.0, create_mod
     if not polys:
         return None
 
-    # Sort polys by area descending, so the largest (outer boundary) is first
+    # Separate into outer boundaries and holes.
+    # A polygon is a hole if it is completely contained within another polygon.
+    outer_polys = []
+    holes = []
+
+    # Sort by area descending so we can easily check containment (holes are smaller than outers)
     polys.sort(key=lambda p: p.area, reverse=True)
 
-    combined_poly = polys[0]
-    for hole in polys[1:]:
-        combined_poly = combined_poly.difference(hole)
+    for p in polys:
+        is_hole = False
+        for outer in outer_polys:
+            if outer.contains(p) or outer.covers(p):
+                holes.append(p)
+                is_hole = True
+                break
+        if not is_hole:
+            outer_polys.append(p)
+
+    # Perform differences for each outer poly with its containing holes
+    final_outers = []
+    for outer in outer_polys:
+        current_outer = outer
+        for hole in holes:
+            if current_outer.contains(hole) or current_outer.covers(hole):
+                current_outer = current_outer.difference(hole)
+        final_outers.append(current_outer)
+
+    # Union all the final outer polygons to create a MultiPolygon or Polygon
+    from shapely.ops import unary_union
+    combined_poly = unary_union(final_outers)
 
     if create_model_lines and doc and sketch_plane and combined_poly:
         draw_shapely_polygon(combined_poly, doc, sketch_plane, z_height)

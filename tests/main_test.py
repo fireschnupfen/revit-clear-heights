@@ -60,7 +60,7 @@ TEST_ROOMS_PES = [
 ]
 
 
-@pytest.mark.parametrize("room_id,expected", TEST_ROOMS)
+@pytest.mark.parametrize("room_id,expected", TEST_ROOMS_PES)
 def test_calculate_clear_heights(room_id, expected):
     value_calculated = set_clear_heights(room_id)
     assert value_calculated == expected

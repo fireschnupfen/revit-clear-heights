@@ -78,7 +78,10 @@ def func_get_face_polygon(room_id, floor_ref_string):
     ref = Reference.ParseFromStableRepresentation(doc, floor_ref_string)
     face = doc.GetElement(ref.ElementId).GetGeometryObjectFromReference(ref)
     polys = get_face_polygon(face, doc=doc, sketch_plane=sketch_plane, z_height=z_height, create_model_lines=False)
-    return polys.area, doc.GetElement(ref.ElementId).LookupParameter("Fläche").AsDouble()
+    
+    expected_area = doc.GetElement(ref.ElementId).LookupParameter("Fläche").AsDouble()
+    print(f"DEBUG get_face_polygon actual area: {polys.area}, expected area: {expected_area}")
+    return polys.area, expected_area
 
 @pytest.mark.parametrize("room_id,floor_ref_string", [ # Correct
     (5139071, "adc6acde-15c5-4e63-9a28-26ff87808d74-01708d10:0:SURFACE")
