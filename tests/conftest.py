@@ -23,3 +23,33 @@ def transaction_group():
     tg.Start()
     yield
     tg.RollBack()
+
+
+@pytest.fixture()
+@revit
+def transaction():
+    """Create a transaction group that will be rolled back after each test."""
+    from Autodesk.Revit.DB import Transaction
+
+    doc = __revit__.ActiveUIDocument.Document
+    t = Transaction(doc, "Test Transaction")
+    t.Start()
+    yield
+    t.Commit()
+
+
+@pytest.fixture
+@revit
+def selected_room():
+    """Return the first selected Room in the active Revit document."""
+    from Autodesk.Revit.DB import BuiltInCategory
+    
+    uidoc = __revit__.ActiveUIDocument
+    doc = uidoc.Document
+    selection = uidoc.Selection.GetElementIds()
+    
+    for eid in selection:
+        elem = doc.GetElement(eid)
+        if elem.Category and elem.Category.Id.Value == int(BuiltInCategory.OST_Rooms):
+            return elem
+    return None

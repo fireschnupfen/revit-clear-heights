@@ -208,6 +208,17 @@ def get_room_polygon(room):
             curve = segment.GetCurve()
             pt = curve.GetEndPoint(0)
             points.append((pt.X, pt.Y))
+            
+            if create_model_lines and doc and sketch_plane:
+                pt2 = curve.GetEndPoint(1)
+                p1 = XYZ(pt.X, pt.Y, z_height)
+                p2 = XYZ(pt2.X, pt2.Y, z_height)
+                if p1.DistanceTo(p2) > 0.005:
+                    try:
+                        line = Line.CreateBound(p1, p2)
+                        doc.Create.NewModelCurve(line, sketch_plane)
+                    except Exception:
+                        pass
 
         if len(points) >= 3:
             poly = ShapelyPolygon(points)
