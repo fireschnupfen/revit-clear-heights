@@ -1,6 +1,6 @@
 import pytest
 from revit_rpc import revit
-from calculate_clear_heights import main
+from face_intersection_drawer import main
 
 try:
     from System.Collections.Generic import List
@@ -22,7 +22,7 @@ def set_clear_heights(room_id):
     uidoc.Selection.SetElementIds(ids)
 
     room = uidoc.Document.GetElement(id)
-    main(debug=True, create_debug_lines=False)
+    main()
 
     return room.LookupParameter("Lichte_Raumhöhe").AsString()
 
