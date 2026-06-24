@@ -22,7 +22,7 @@ def set_clear_heights(room_id):
     uidoc.Selection.SetElementIds(ids)
 
     room = uidoc.Document.GetElement(id)
-    main()
+    main(debug=True, create_debug_lines=True, create_ray_lines=True)
 
     return room.LookupParameter("Lichte_Raumhöhe").AsString()
 
@@ -60,6 +60,6 @@ TEST_ROOMS_PES = [
 
 
 @pytest.mark.parametrize("room_id,expected", TEST_ROOMS)
-def test_calculate_clear_heights(transaction_group, room_id, expected):
+def test_calculate_clear_heights(room_id, expected):
     value_calculated = set_clear_heights(room_id)
     assert value_calculated == expected

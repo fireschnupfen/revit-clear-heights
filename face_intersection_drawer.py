@@ -69,11 +69,12 @@ def get_closest_valid_ref(doc, refs, max_distance, require_upward_normal):
     return closest_ref
 
 
-def auto_find_room_faces(doc, room, z_height, room_poly):
+def auto_find_room_faces(doc, room, z_height, room_poly, create_ray_lines=False, debug=False):
     """Automatically find floor and ceiling faces for a given room using ray casting."""
     view_3d = get_3d_view_by_name(doc, "RAY_CASTING_VIEW")
     if not view_3d:
-        print("3D view 'RAY_CASTING_VIEW' not found.")
+        if debug:
+            print("3D view 'RAY_CASTING_VIEW' not found.")
         return [], []
 
     categories = List[BuiltInCategory]()
@@ -100,7 +101,8 @@ def auto_find_room_faces(doc, room, z_height, room_poly):
             y += grid_spacing
         x += grid_spacing
 
-    print(f"Casting rays from {len(grid_points)} points to find floor and ceiling faces...")
+    if debug:
+        print(f"Casting rays from {len(grid_points)} points to find floor and ceiling faces...")
 
     floor_refs = []
     ceiling_refs = []
@@ -112,19 +114,52 @@ def auto_find_room_faces(doc, room, z_height, room_poly):
 
         # Ceiling (must have downward-facing normal)
         c_ref = get_closest_valid_ref(doc, up_refs, max_ray_distance, require_upward_normal=False)
+        c_pt = None
         if c_ref:
             rep = c_ref.ConvertToStableRepresentation(doc)
             if rep not in seen_refs:
                 seen_refs.add(rep)
                 ceiling_refs.append(c_ref)
 
+            # If ray lines are requested, try to find the actual intersection point
+            if create_ray_lines:
+                for hit in up_refs:
+                    if hit.GetReference().ConvertToStableRepresentation(doc) == rep:
+                        c_pt = XYZ(pt.X, pt.Y, pt.Z + hit.Proximity)
+                        break
+
         # Floor below (must have upward-facing normal)
         f_ref = get_closest_valid_ref(doc, down_refs, max_ray_distance, require_upward_normal=True)
+        f_pt = None
         if f_ref:
             rep = f_ref.ConvertToStableRepresentation(doc)
             if rep not in seen_refs:
                 seen_refs.add(rep)
                 floor_refs.append(f_ref)
+
+            # If ray lines are requested, try to find the actual intersection point
+            if create_ray_lines:
+                for hit in down_refs:
+                    if hit.GetReference().ConvertToStableRepresentation(doc) == rep:
+                        f_pt = XYZ(pt.X, pt.Y, pt.Z - hit.Proximity)
+                        break
+
+        # Draw vertical lines showing the raycast if requested
+        if create_ray_lines and c_pt and f_pt:
+            try:
+                line = Line.CreateBound(f_pt, c_pt)
+                line_direction = (c_pt - f_pt).Normalize()
+                if abs(line_direction.Z) > 0.9:
+                    plane_normal = XYZ(0, 1, 0)
+                else:
+                    plane_normal = XYZ.BasisZ.CrossProduct(line_direction).Normalize()
+
+                plane = Plane.CreateByNormalAndOrigin(plane_normal, f_pt)
+                sketch_plane = SketchPlane.Create(doc, plane)
+                doc.Create.NewModelCurve(line, sketch_plane)
+            except Exception as e:
+                if debug:
+                    print(f"Error drawing ray line: {e}")
 
     return floor_refs, ceiling_refs
 
@@ -210,7 +245,8 @@ def get_z_on_planar_face(face, x, y):
     return None
 
 
-def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, room_poly, sketch_plane, z_height):
+def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, room_poly, sketch_plane, z_height,
+                       create_debug_lines=False, debug=False):
     """
     Evaluates the 2D intersection of a floor face, ceiling face, and the room boundary.
     Draws the intersection and evaluates clear heights at the vertices.
@@ -254,7 +290,7 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
             p1 = XYZ(x1, y1, z_height)
             p2 = XYZ(x2, y2, z_height)
 
-            if p1.DistanceTo(p2) > 0.005:
+            if create_debug_lines and p1.DistanceTo(p2) > 0.005:
                 line = Line.CreateBound(p1, p2)
                 doc.Create.NewModelCurve(line, sketch_plane)
                 lines_created += 1
@@ -271,7 +307,7 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
                 p1 = XYZ(x1, y1, z_height)
                 p2 = XYZ(x2, y2, z_height)
 
-                if p1.DistanceTo(p2) > 0.005:
+                if create_debug_lines and p1.DistanceTo(p2) > 0.005:
                     line = Line.CreateBound(p1, p2)
                     doc.Create.NewModelCurve(line, sketch_plane)
                     lines_created += 1
@@ -298,20 +334,21 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
     else:
         height_str = "None"
 
-    if room_area > 0:
+    if debug and room_area > 0:
         print(f"-> Found intersection overlapping {area_pct:.2f}% of the room area. Clear height(s): {height_str}")
 
     # Introduce threshold: exclude areas representing < 8.0% of the room from the final evaluation
     # (they will still be drawn as curves for debugging, but not return heights)
     if area_pct < 8.0:
-        print(f"   (Excluded from final evaluation as {area_pct:.2f}% < 8.0%)")
+        if debug:
+            print(f"   (Excluded from final evaluation as {area_pct:.2f}% < 8.0%)")
         return lines_created, []
 
     return lines_created, clear_heights
 
 
 @revit
-def main():
+def main(debug=False, create_debug_lines=False, create_ray_lines=False):
     doc = __revit__.ActiveUIDocument.Document
     uidoc = __revit__.ActiveUIDocument
 
@@ -325,7 +362,8 @@ def main():
             break
 
     if not room:
-        print("Please select a Room before running the script.")
+        if debug:
+            print("Please select a Room before running the script.")
         return
 
     # 2. Calculate the target Z height (Level Elevation + Computation Height)
@@ -341,28 +379,30 @@ def main():
     # 3. Extract room polygon
     room_poly = get_room_polygon(room)
     if not room_poly:
-        print("Could not extract valid boundaries from the room.")
+        if debug:
+            print("Could not extract valid boundaries from the room.")
         return
 
-    # 4. Prompt user to pick MULTIPLE faces for floors, then ceilings
-    try:
-        floor_refs, ceiling_refs = auto_find_room_faces(doc, room, z_height, room_poly)
-        if not floor_refs:
-            print("No floor faces found.")
-            return
-
-        if not ceiling_refs:
-            print("No ceiling/roof faces found.")
-            return
-    except Exception:
-        print("Face selection cancelled.")
-        return
-
-    # 5. Evaluate intersections and draw
-    t = Transaction(doc, "Draw Multi-Face Intersections & Evaluate Heights")
+    # 4. Start transaction and autoselect faces
+    t = Transaction(doc, "Calculate Clear Heights")
     t.Start()
 
     try:
+        floor_refs, ceiling_refs = auto_find_room_faces(doc, room, z_height, room_poly,
+                                                        create_ray_lines=create_ray_lines, debug=debug)
+        if not floor_refs:
+            if debug:
+                print("No floor faces found.")
+            t.RollBack()
+            return
+
+        if not ceiling_refs:
+            if debug:
+                print("No ceiling/roof faces found.")
+            t.RollBack()
+            return
+
+        # 5. Evaluate intersections and draw boundary overlaps
         # Create a flat SketchPlane at the exact calculated z_height
         origin = XYZ(0, 0, z_height)
         plane = Plane.CreateByNormalAndOrigin(XYZ.BasisZ, origin)
@@ -414,13 +454,17 @@ def main():
                     doc,
                     floor_data['face'], floor_data['poly'],
                     ceiling_data['face'], ceiling_data['poly'],
-                    room_poly, sketch_plane, z_height
+                    room_poly, sketch_plane, z_height,
+                    create_debug_lines=create_debug_lines,
+                    debug=debug
                 )
 
                 total_lines_created += lines_created
                 all_clear_heights.extend(heights)
 
-        print(f"Success! Created {total_lines_created} model lines at Z={z_height * 0.3048:.3f}m showing the overlaps.")
+        if debug:
+            print(
+                f"Success! Created {total_lines_created} model lines at Z={z_height * 0.3048:.3f}m showing the overlaps.")
 
         # 6. Print the global minimum and maximum and write to parameter
         if all_clear_heights:
@@ -433,24 +477,29 @@ def main():
             else:
                 result = f"{min_ch:.3f} m - {max_ch:.3f} m".replace(".", ",")
 
-            print("\n--- Clear Heights Summary ---")
-            print(f"Evaluated {len(all_clear_heights)} valid points across all intersecting floor-ceiling pairs.")
-            print(f"Resulting Clear Height: {result}")
+            if debug:
+                print("\n--- Clear Heights Summary ---")
+                print(f"Evaluated {len(all_clear_heights)} valid points across all intersecting floor-ceiling pairs.")
+                print(f"Resulting Clear Height: {result}")
 
             param = room.LookupParameter("Lichte_Raumhöhe")
             if param:
                 param.Set(result)
-                print("Successfully updated parameter 'Lichte_Raumhöhe'.")
+                if debug:
+                    print("Successfully updated parameter 'Lichte_Raumhöhe'.")
             else:
-                print("Parameter 'Lichte_Raumhöhe' not found.")
+                if debug:
+                    print("Parameter 'Lichte_Raumhöhe' not found.")
         else:
-            print("\nNo valid clear heights could be evaluated at the intersection vertices.")
+            if debug:
+                print("\nNo valid clear heights could be evaluated at the intersection vertices.")
 
         t.Commit()
 
     except Exception as e:
         t.RollBack()
-        print(f"Error processing intersections: {e}")
+        if debug:
+            print(f"Error processing intersections: {e}")
 
 
 if __name__ == "__main__":
