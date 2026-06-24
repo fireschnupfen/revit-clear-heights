@@ -59,9 +59,7 @@ def set_clear_heights(room_id):
     return room.LookupParameter("Lichte_Raumhöhe").AsString()
 
 
-@pytest.mark.parametrize("room_id,expected", TEST_ROOMS_PES)
+@pytest.mark.parametrize("room_id,expected", TEST_ROOMS)
 def test_calculate_clear_heights(transaction_group, room_id, expected):
     value_calculated = set_clear_heights(room_id)
     assert value_calculated == expected
-
-5852412,5139071,5498143,5850933,11398635,58817722,11129429,5850929,6477863,7609512,10843640,6457698,8278812

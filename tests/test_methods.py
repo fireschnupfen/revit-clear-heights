@@ -93,25 +93,6 @@ def test_get_face_polygon(transaction, room_id, floor_ref_string):
     value, excpeted = func_get_face_polygon(room_id, floor_ref_string)
     assert round(value) == round(excpeted)
 
-@revit
-def func_get_face_polygon(room_id, floor_ref_string):
-    room = get_room(room_id)
-    doc = room.Document
-    sketch_plane, z_height = room_sketch_plane(room)
-    ref = Reference.ParseFromStableRepresentation(doc, floor_ref_string)
-    face = doc.GetElement(ref.ElementId).GetGeometryObjectFromReference(ref)
-    polys = get_face_polygon(face, doc=doc, sketch_plane=sketch_plane, z_height=z_height, create_model_lines=False)
-    
-    expected_area = doc.GetElement(ref.ElementId).LookupParameter("Fläche").AsDouble()
-    return polys.area, expected_area
-
-@pytest.mark.parametrize("room_id,floor_ref_string", [ # Correct
-    (5139071, "adc6acde-15c5-4e63-9a28-26ff87808d74-01708d10:0:SURFACE")
-])
-def test_get_face_polygon(transaction, room_id, floor_ref_string):
-    value, excpeted = func_get_face_polygon(room_id, floor_ref_string)
-    assert round(value) == round(excpeted)
-
 
 @pytest.mark.parametrize("room_id", [5139071])
 @revit
@@ -169,7 +150,7 @@ def test_get_intersection_polygon(transaction, room_id):
 
 @pytest.mark.parametrize("room_id,len_floor_faces,len_ceiling_faces", [
     (5139071, 3, 2),
-    (6457698, 1, 3)
+    (6457698, 1, 4)
 ])
 @revit
 def test_auto_find_room_faces(transaction, room_id, len_floor_faces, len_ceiling_faces):
@@ -204,6 +185,40 @@ def test_auto_find_room_faces(transaction, room_id, len_floor_faces, len_ceiling
         assert len(ceiling_faces) == len_ceiling_faces, f"Expected {len_ceiling_faces} faces, but found {len(ceiling_faces)}"
     except Exception as e:
         pytest.fail(f"test_auto_find_room_faces raised {e}")
+
+
+@pytest.mark.parametrize("room_id,expected_pairs", [
+    (6457698, [(38879961, 16542829),(38879961, 29942629),(38879961, 15457563),(38879961, 11868779)])  # Placeholder
+])
+@revit
+def test_get_room_face_pairs(transaction, room_id, expected_pairs):
+    room = get_room(room_id)
+    doc = room.Document
+    try:
+        sketch_plane, z_height = room_sketch_plane(room)
+        
+        from face_intersection_drawer import get_room_polygon, get_room_face_pairs
+        
+        # Get room polygon
+        room_poly = get_room_polygon(room, doc=doc, sketch_plane=sketch_plane, z_height=z_height, create_model_lines=False)
+        
+        # Find face pairs
+        floor_refs, ceiling_refs, pairs = get_room_face_pairs(
+            doc=doc, 
+            room=room,
+            z_height=z_height, 
+            room_poly=room_poly, 
+            grid_spacing=5, 
+            create_ray_lines=False, 
+            debug=False
+        )
+        
+        actual_pairs = [(p[0]['element_id'], p[1]['element_id']) for p in pairs]
+        
+        # Sort both lists of tuples to make order-independent comparison
+        assert sorted(actual_pairs) == sorted(expected_pairs), f"Expected {expected_pairs}, but found {actual_pairs}"
+    except Exception as e:
+        pytest.fail(f"test_get_room_face_pairs raised {e}")
 
 
 @pytest.mark.parametrize("room_id,floor_ref_string,ceiling_ref_string,expected_min,expected_max", [

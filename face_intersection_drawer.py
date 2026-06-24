@@ -371,6 +371,61 @@ def get_intersection_polygon(polys, doc=None, sketch_plane=None, z_height=0.0, c
     return result
 
 
+def get_room_face_pairs(doc, room, z_height, room_poly, grid_spacing, create_ray_lines=False, debug=False):
+    """
+    Runs auto face detection and then pairs them together.
+    Returns (floor_refs, ceiling_refs, pairs), where pairs is a list of (floor_data, ceiling_data) dictionaries.
+    """
+    floor_refs, ceiling_refs = auto_find_room_faces(doc, room, z_height, room_poly, grid_spacing,
+                                                    create_ray_lines=create_ray_lines, debug=debug)
+    
+    if not floor_refs or not ceiling_refs:
+        return floor_refs, ceiling_refs, []
+
+    # Pre-process floors: sort by Z descending (highest first) and subtract upper from lower
+    floors_data = []
+    for ref in floor_refs:
+        face = doc.GetElement(ref.ElementId).GetGeometryObjectFromReference(ref)
+        poly = get_face_polygon(face)
+        if poly:
+            z = face.Origin.Z if hasattr(face, "Origin") else 0
+            floors_data.append({'face': face, 'poly': poly, 'z': z, 'element_id': ref.ElementId.Value})
+
+    floors_data.sort(key=lambda x: x['z'], reverse=True)
+    accumulated_floors = None
+    for data in floors_data:
+        if accumulated_floors is not None:
+            data['poly'] = get_subtracted_polygon(data['poly'], accumulated_floors)
+            accumulated_floors = accumulated_floors.union(data['poly'])
+        else:
+            accumulated_floors = data['poly']
+
+    # Pre-process ceilings: sort by Z ascending (lowest first) and subtract lower from upper
+    ceilings_data = []
+    for ref in ceiling_refs:
+        face = doc.GetElement(ref.ElementId).GetGeometryObjectFromReference(ref)
+        poly = get_face_polygon(face)
+        if poly:
+            z = face.Origin.Z if hasattr(face, "Origin") else 0
+            ceilings_data.append({'face': face, 'poly': poly, 'z': z, 'element_id': ref.ElementId.Value})
+
+    ceilings_data.sort(key=lambda x: x['z'])
+    accumulated_ceilings = None
+    for data in ceilings_data:
+        if accumulated_ceilings is not None:
+            data['poly'] = get_subtracted_polygon(data['poly'], accumulated_ceilings)
+            accumulated_ceilings = accumulated_ceilings.union(data['poly'])
+        else:
+            accumulated_ceilings = data['poly']
+
+    pairs = []
+    for floor_data in floors_data:
+        for ceiling_data in ceilings_data:
+            pairs.append((floor_data, ceiling_data))
+            
+    return floor_refs, ceiling_refs, pairs
+
+
 def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, room_poly, sketch_plane, z_height,
                        create_debug_lines=False, debug=False, area_threshold_pct=8.0):
     """
@@ -534,8 +589,8 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
     t.Start()
 
     try:
-        floor_refs, ceiling_refs = auto_find_room_faces(doc, room, z_height, room_poly, grid_spacing,
-                                                        create_ray_lines=create_ray_lines, debug=debug)
+        floor_refs, ceiling_refs, pairs = get_room_face_pairs(doc, room, z_height, room_poly, grid_spacing,
+                                                              create_ray_lines=create_ray_lines, debug=debug)
         if not floor_refs:
             if debug:
                 print("No floor faces found.")
@@ -557,57 +612,20 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
         total_lines_created = 0
         all_clear_heights = []
 
-        # Pre-process floors: sort by Z descending (highest first) and subtract upper from lower
-        floors_data = []
-        for ref in floor_refs:
-            face = doc.GetElement(ref.ElementId).GetGeometryObjectFromReference(ref)
-            poly = get_face_polygon(face)
-            if poly:
-                z = face.Origin.Z if hasattr(face, "Origin") else 0
-                floors_data.append({'face': face, 'poly': poly, 'z': z})
-
-        floors_data.sort(key=lambda x: x['z'], reverse=True)
-        accumulated_floors = None
-        for data in floors_data:
-            if accumulated_floors is not None:
-                data['poly'] = get_subtracted_polygon(data['poly'], accumulated_floors)
-                accumulated_floors = accumulated_floors.union(data['poly'])
-            else:
-                accumulated_floors = data['poly']
-
-        # Pre-process ceilings: sort by Z ascending (lowest first) and subtract lower from upper
-        ceilings_data = []
-        for ref in ceiling_refs:
-            face = doc.GetElement(ref.ElementId).GetGeometryObjectFromReference(ref)
-            poly = get_face_polygon(face)
-            if poly:
-                z = face.Origin.Z if hasattr(face, "Origin") else 0
-                ceilings_data.append({'face': face, 'poly': poly, 'z': z})
-
-        ceilings_data.sort(key=lambda x: x['z'])
-        accumulated_ceilings = None
-        for data in ceilings_data:
-            if accumulated_ceilings is not None:
-                data['poly'] = get_subtracted_polygon(data['poly'], accumulated_ceilings)
-                accumulated_ceilings = accumulated_ceilings.union(data['poly'])
-            else:
-                accumulated_ceilings = data['poly']
-
         # Iterate through every combination of (floor face) and (ceiling face)
-        for floor_data in floors_data:
-            for ceiling_data in ceilings_data:
-                lines_created, heights = evaluate_face_pair(
-                    doc,
-                    floor_data['face'], floor_data['poly'],
-                    ceiling_data['face'], ceiling_data['poly'],
-                    room_poly, sketch_plane, z_height,
-                    create_debug_lines=create_debug_lines,
-                    debug=debug,
-                    area_threshold_pct=area_threshold_pct
-                )
+        for floor_data, ceiling_data in pairs:
+            lines_created, heights = evaluate_face_pair(
+                doc,
+                floor_data['face'], floor_data['poly'],
+                ceiling_data['face'], ceiling_data['poly'],
+                room_poly, sketch_plane, z_height,
+                create_debug_lines=create_debug_lines,
+                debug=debug,
+                area_threshold_pct=area_threshold_pct
+            )
 
-                total_lines_created += lines_created
-                all_clear_heights.extend(heights)
+            total_lines_created += lines_created
+            all_clear_heights.extend(heights)
 
         if debug:
             print(
