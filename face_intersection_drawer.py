@@ -102,13 +102,13 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
     Draws the intersection and evaluates clear heights at the vertices.
     """
     if not floor_poly or not ceiling_poly or floor_poly.is_empty or ceiling_poly.is_empty:
-        return 0, []
+        return 0, "None", 0.0, []
 
     # Perform the 3-way boolean intersection (Room ∩ Floor ∩ Ceiling)
     intersection = room_poly.intersection(floor_poly).intersection(ceiling_poly)
 
     if intersection.is_empty:
-        return 0, []
+        return 0, "None", 0.0, []
 
     # Calculate the area percentage
     room_area = room_poly.area
@@ -123,7 +123,7 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
     elif intersection.geom_type == 'MultiPolygon':
         geoms = intersection.geoms
     else:
-        return 0, []
+        return 0, "None", 0.0, []
 
     evaluated_points = set()
     lines_created = 0
@@ -187,13 +187,7 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
     if room_area > 0:
         print(f"-> Found intersection overlapping {area_pct:.2f}% of the room area. Clear height(s): {height_str}")
 
-    # Introduce threshold: exclude areas representing < 8.0% of the room from the final evaluation
-    # (they will still be drawn as curves for debugging, but not return heights)
-    if area_pct < 8.0:
-        print(f"   (Excluded from final evaluation as {area_pct:.2f}% < 8.0%)")
-        return lines_created, []
-
-    return lines_created, clear_heights
+    return lines_created, height_str, area_pct, clear_heights
 
 
 @revit
@@ -255,7 +249,9 @@ def main():
         sketch_plane = SketchPlane.Create(doc, plane)
 
         total_lines_created = 0
-        all_clear_heights = []
+
+        height_areas = {}
+        height_raw_values = {}
 
         # Pre-process floors: sort by Z descending (highest first) and subtract upper from lower
         floors_data = []
@@ -296,7 +292,7 @@ def main():
         # Iterate through every combination of (floor face) and (ceiling face)
         for floor_data in floors_data:
             for ceiling_data in ceilings_data:
-                lines_created, heights = evaluate_face_pair(
+                lines_created, height_str, area_pct, heights = evaluate_face_pair(
                     doc,
                     floor_data['face'], floor_data['poly'],
                     ceiling_data['face'], ceiling_data['poly'],
@@ -304,22 +300,40 @@ def main():
                 )
 
                 total_lines_created += lines_created
-                all_clear_heights.extend(heights)
+
+                if height_str != "None":
+                    if height_str not in height_areas:
+                        height_areas[height_str] = 0.0
+                        height_raw_values[height_str] = []
+
+                    height_areas[height_str] += area_pct
+                    height_raw_values[height_str].extend(heights)
 
         t.Commit()
 
         print(f"Success! Created {total_lines_created} model lines at Z={z_height * 0.3048:.3f}m showing the overlaps.")
 
-        # 6. Print the global minimum and maximum
-        if all_clear_heights:
-            min_ch = min(all_clear_heights)
-            max_ch = max(all_clear_heights)
+        # 6. Evaluate thresholds and print the global minimum and maximum
+        print("\n--- Area Threshold Evaluation (>= 8.0%) ---")
+        valid_clear_heights = []
+
+        for h_str, pct in height_areas.items():
+            if pct >= 8.0:
+                print(f"Accepted: {h_str} (Total Area: {pct:.2f}%)")
+                valid_clear_heights.extend(height_raw_values[h_str])
+            else:
+                print(f"Excluded: {h_str} (Total Area: {pct:.2f}% < 8.0%)")
+
+        if valid_clear_heights:
+            min_ch = min(valid_clear_heights)
+            max_ch = max(valid_clear_heights)
             print("\n--- Clear Heights Summary ---")
-            print(f"Evaluated {len(all_clear_heights)} valid points across all intersecting floor-ceiling pairs.")
+            print(f"Evaluated {len(valid_clear_heights)} valid points across accepted floor-ceiling pairs.")
             print(f"Minimum Clear Height: {min_ch:.3f} m")
             print(f"Maximum Clear Height: {max_ch:.3f} m")
         else:
-            print("\nNo valid clear heights could be evaluated at the intersection vertices.")
+            print(
+                "\nNo valid clear heights could be evaluated at the intersection vertices, or all were excluded by the area threshold.")
 
     except Exception as e:
         t.RollBack()
