@@ -80,7 +80,6 @@ def func_get_face_polygon(room_id, floor_ref_string):
     polys = get_face_polygon(face, doc=doc, sketch_plane=sketch_plane, z_height=z_height, create_model_lines=False)
     
     expected_area = doc.GetElement(ref.ElementId).LookupParameter("Fläche").AsDouble()
-    print(f"DEBUG get_face_polygon actual area: {polys.area}, expected area: {expected_area}")
     return polys.area, expected_area
 
 @pytest.mark.parametrize("room_id,floor_ref_string", [ # Correct

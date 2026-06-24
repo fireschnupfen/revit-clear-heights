@@ -170,7 +170,6 @@ def get_face_polygon(face, doc=None, sketch_plane=None, z_height=0.0, create_mod
         return None
 
     polys = []
-    print(f"DEBUG get_face_polygon loops count: {len(loops)}")
     for i, loop in enumerate(loops):
         points = []
         for curve in loop:
@@ -179,7 +178,6 @@ def get_face_polygon(face, doc=None, sketch_plane=None, z_height=0.0, create_mod
                 p = (pt.X, pt.Y)
                 if not points or points[-1] != p:
                     points.append(p)
-        print(f"DEBUG loop {i} generated {len(points)} points")
 
         if len(points) >= 3:
             # Check if start and end points match
@@ -187,7 +185,6 @@ def get_face_polygon(face, doc=None, sketch_plane=None, z_height=0.0, create_mod
                 points.append(points[0])
 
             poly = ShapelyPolygon(points)
-            print(f"DEBUG poly {i} is_valid initially: {poly.is_valid}, area: {poly.area}")
             if not poly.is_valid:
                 poly = make_valid(poly)
             polys.append(poly)
@@ -381,17 +378,12 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
     Draws the intersection and evaluates clear heights at the vertices.
     """
     if not floor_poly or not ceiling_poly or floor_poly.is_empty or ceiling_poly.is_empty:
-        print(f"DEBUG: empty polys. floor: {floor_poly}, ceiling: {ceiling_poly}")
         return 0, []
 
     # Perform the 3-way boolean intersection (Room ∩ Floor ∩ Ceiling)
     intersection = get_intersection_polygon([room_poly, floor_poly, ceiling_poly])
 
     if not intersection or intersection.is_empty:
-        print(f"DEBUG: empty intersection. Room area: {room_poly.area}, Floor area: {floor_poly.area}, Ceiling area: {ceiling_poly.area}")
-        print(f"Room bounds: {room_poly.bounds}")
-        print(f"Floor bounds: {floor_poly.bounds}")
-        print(f"Ceil bounds: {ceiling_poly.bounds}")
         return 0, []
 
     # Calculate the area percentage
@@ -469,7 +461,8 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
         height_str = "None"
 
     if debug and room_area > 0:
-        print(f"-> Found intersection overlapping {area_pct:.2f}% of the room area. Clear height(s): {height_str}")
+        intersection_area_m2 = intersection_area * 0.09290304
+        print(f"-> Found intersection overlapping {area_pct:.2f}% of the room area (Intersection Area: {intersection_area_m2:.2f} m²). Clear height(s): {height_str}")
 
     # Introduce threshold: exclude areas representing < 8.0% of the room from the final evaluation
     # (they will still be drawn as curves for debugging, but not return heights)
