@@ -396,9 +396,11 @@ def get_room_face_pairs(doc, room, z_height, room_poly, grid_spacing, create_ray
     for data in floors_data:
         if accumulated_floors is not None:
             data['poly'] = get_subtracted_polygon(data['poly'], accumulated_floors)
-            accumulated_floors = accumulated_floors.union(data['poly'])
+            if data['poly'] and not data['poly'].is_empty:
+                accumulated_floors = accumulated_floors.union(data['poly'])
         else:
-            accumulated_floors = data['poly']
+            if data['poly'] and not data['poly'].is_empty:
+                accumulated_floors = data['poly']
 
     # Pre-process ceilings: sort by Z ascending (lowest first) and subtract lower from upper
     ceilings_data = []
@@ -414,9 +416,11 @@ def get_room_face_pairs(doc, room, z_height, room_poly, grid_spacing, create_ray
     for data in ceilings_data:
         if accumulated_ceilings is not None:
             data['poly'] = get_subtracted_polygon(data['poly'], accumulated_ceilings)
-            accumulated_ceilings = accumulated_ceilings.union(data['poly'])
+            if data['poly'] and not data['poly'].is_empty:
+                accumulated_ceilings = accumulated_ceilings.union(data['poly'])
         else:
-            accumulated_ceilings = data['poly']
+            if data['poly'] and not data['poly'].is_empty:
+                accumulated_ceilings = data['poly']
 
     pairs = []
     for floor_data in floors_data:
@@ -453,6 +457,8 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
         geoms = [intersection]
     elif intersection.geom_type == 'MultiPolygon':
         geoms = intersection.geoms
+    elif intersection.geom_type == 'GeometryCollection':
+        geoms = [g for g in intersection.geoms if g.geom_type in ('Polygon', 'MultiPolygon')]
     else:
         return 0, [], area_pct
 
