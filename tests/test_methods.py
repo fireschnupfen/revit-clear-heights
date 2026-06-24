@@ -343,12 +343,23 @@ def test_evaluate_room_clear_heights(transaction, room_id, expected_heights):
         all_clear_heights = []
         for result in evaluation_results:
             all_clear_heights.extend(result['heights'])
-        all_clear_heights = list(set(all_clear_heights))
-
-        # Use small tolerance for float comparison
-        for expected in expected_heights:
-            found = any(abs(expected - actual) <= 0.01 for actual in all_clear_heights)
-            assert found, f"Expected height {expected} not found in evaluated heights {all_clear_heights}"
+            
+        if all_clear_heights:
+            from face_intersection_drawer import round_to_half_cm
+            min_h = round_to_half_cm(min(all_clear_heights))
+            max_h = round_to_half_cm(max(all_clear_heights))
+            
+            actual_heights = [min_h]
+            if min_h != max_h:
+                actual_heights.append(max_h)
+            
+            # Use small tolerance for float comparison
+            for expected in expected_heights:
+                found = any(abs(expected - actual) <= 0.01 for actual in actual_heights)
+                assert found, f"Expected height {expected} not found in evaluated heights {actual_heights}"
+        else:
+            if expected_heights:
+                pytest.fail("No clear heights evaluated, but expected " + str(expected_heights))
 
     except Exception as e:
         pytest.fail(f"test_evaluate_room_clear_heights raised {e}")

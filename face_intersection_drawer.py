@@ -568,6 +568,11 @@ def evaluate_room_clear_heights(doc, room, z_height, room_poly, grid_spacing, cr
     return total_lines_created, results
 
 
+def round_to_half_cm(value):
+    """Rounds the value to the nearest 0.005 (0.5 cm)."""
+    return round(value * 200) / 200
+
+
 @revit
 def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spacing_min_m=1, grid_spacing_max_m=3,
          area_min_m2=10.0, area_max_m2=100.0, area_threshold_pct=8.0):
@@ -655,8 +660,8 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
                 print(f"   (Excluded from final evaluation as {result['area_pct']:.2f}% < {area_threshold_pct}%)")
 
         if all_clear_heights:
-            min_ch = min(all_clear_heights)
-            max_ch = max(all_clear_heights)
+            min_ch = round_to_half_cm(min(all_clear_heights))
+            max_ch = round_to_half_cm(max(all_clear_heights))
 
             # Format the result with German locale (comma instead of decimal point)
             if abs(max_ch - min_ch) < 0.005:
