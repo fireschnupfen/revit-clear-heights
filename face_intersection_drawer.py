@@ -173,19 +173,10 @@ def get_face_polygon(face, doc=None, sketch_plane=None, z_height=0.0, create_mod
     for loop in loops:
         points = []
         for curve in loop:
-            pt = curve.GetEndPoint(0)
-            points.append((pt.X, pt.Y))  # Drop the Z coordinate entirely
-            
-            if create_model_lines and doc and sketch_plane:
-                pt2 = curve.GetEndPoint(1)
-                p1 = XYZ(pt.X, pt.Y, z_height)
-                p2 = XYZ(pt2.X, pt2.Y, z_height)
-                if p1.DistanceTo(p2) > 0.005:
-                    try:
-                        line = Line.CreateBound(p1, p2)
-                        doc.Create.NewModelCurve(line, sketch_plane)
-                    except Exception:
-                        pass
+            pts = curve.Tessellate()
+            for i in range(len(pts) - 1):
+                pt = pts[i]
+                points.append((pt.X, pt.Y))  # Drop the Z coordinate entirely
 
         if len(points) >= 3:
             poly = ShapelyPolygon(points)
@@ -196,9 +187,15 @@ def get_face_polygon(face, doc=None, sketch_plane=None, z_height=0.0, create_mod
     if not polys:
         return None
 
+    # Sort polys by area descending, so the largest (outer boundary) is first
+    polys.sort(key=lambda p: p.area, reverse=True)
+
     combined_poly = polys[0]
     for hole in polys[1:]:
         combined_poly = combined_poly.difference(hole)
+
+    if create_model_lines and doc and sketch_plane and combined_poly:
+        draw_shapely_polygon(combined_poly, doc, sketch_plane, z_height)
 
     return combined_poly
 
@@ -217,19 +214,10 @@ def get_room_polygon(room, doc=None, sketch_plane=None, z_height=0.0, create_mod
         points = []
         for segment in segment_list:
             curve = segment.GetCurve()
-            pt = curve.GetEndPoint(0)
-            points.append((pt.X, pt.Y))
-            
-            if create_model_lines and doc and sketch_plane:
-                pt2 = curve.GetEndPoint(1)
-                p1 = XYZ(pt.X, pt.Y, z_height)
-                p2 = XYZ(pt2.X, pt2.Y, z_height)
-                if p1.DistanceTo(p2) > 0.005:
-                    try:
-                        line = Line.CreateBound(p1, p2)
-                        doc.Create.NewModelCurve(line, sketch_plane)
-                    except Exception:
-                        pass
+            pts = curve.Tessellate()
+            for i in range(len(pts) - 1):
+                pt = pts[i]
+                points.append((pt.X, pt.Y))
 
         if len(points) >= 3:
             poly = ShapelyPolygon(points)
@@ -240,10 +228,15 @@ def get_room_polygon(room, doc=None, sketch_plane=None, z_height=0.0, create_mod
     if not polys:
         return None
 
-    # First loop is the outer boundary, subsequent loops are holes
+    # Sort polys by area descending, so the largest (outer boundary) is first
+    polys.sort(key=lambda p: p.area, reverse=True)
+
     combined_poly = polys[0]
     for hole in polys[1:]:
         combined_poly = combined_poly.difference(hole)
+
+    if create_model_lines and doc and sketch_plane and combined_poly:
+        draw_shapely_polygon(combined_poly, doc, sketch_plane, z_height)
 
     return combined_poly
 
@@ -331,12 +324,17 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
     Draws the intersection and evaluates clear heights at the vertices.
     """
     if not floor_poly or not ceiling_poly or floor_poly.is_empty or ceiling_poly.is_empty:
+        print(f"DEBUG: empty polys. floor: {floor_poly}, ceiling: {ceiling_poly}")
         return 0, []
 
     # Perform the 3-way boolean intersection (Room ∩ Floor ∩ Ceiling)
     intersection = get_intersection_polygon([room_poly, floor_poly, ceiling_poly])
 
     if not intersection or intersection.is_empty:
+        print(f"DEBUG: empty intersection. Room area: {room_poly.area}, Floor area: {floor_poly.area}, Ceiling area: {ceiling_poly.area}")
+        print(f"Room bounds: {room_poly.bounds}")
+        print(f"Floor bounds: {floor_poly.bounds}")
+        print(f"Ceil bounds: {ceiling_poly.bounds}")
         return 0, []
 
     # Calculate the area percentage

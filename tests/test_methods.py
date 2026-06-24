@@ -70,28 +70,22 @@ def test_get_room_polygon(transaction, room_id):
         pytest.fail(f"get_room_polygon raised {e}")
 
 
-@pytest.mark.parametrize("room_id", [5139071])
 @revit
-def test_get_face_polygon(transaction, room_id):
+def func_get_face_polygon(room_id, floor_ref_string):
     room = get_room(room_id)
     doc = room.Document
-    try:
-        sketch_plane, z_height = room_sketch_plane(room)
-        
-        from face_intersection_drawer import get_face_polygon
-        from Autodesk.Revit.UI.Selection import ObjectType
-        import sys
-        
-        # Retrieve ActiveUIDocument from __main__ globals (injected by revit_rpc)
-        uidoc = __revit__.ActiveUIDocument
-        floor_refs = uidoc.Selection.PickObjects(ObjectType.Face, "Select a face")
-        
-        if floor_refs:
-            ref = floor_refs[0]
-            face = doc.GetElement(ref.ElementId).GetGeometryObjectFromReference(ref)
-            get_face_polygon(face, doc=doc, sketch_plane=sketch_plane, z_height=z_height, create_model_lines=True)
-    except Exception as e:
-        pytest.fail(f"get_face_polygon raised {e}")
+    sketch_plane, z_height = room_sketch_plane(room)
+    ref = Reference.ParseFromStableRepresentation(doc, floor_ref_string)
+    face = doc.GetElement(ref.ElementId).GetGeometryObjectFromReference(ref)
+    polys = get_face_polygon(face, doc=doc, sketch_plane=sketch_plane, z_height=z_height, create_model_lines=False)
+    return polys.area, doc.GetElement(ref.ElementId).LookupParameter("Fläche").AsDouble()
+
+@pytest.mark.parametrize("room_id,floor_ref_string", [ # Correct
+    (5139071, "adc6acde-15c5-4e63-9a28-26ff87808d74-01708d10:0:SURFACE")
+])
+def test_get_face_polygon(transaction, room_id, floor_ref_string):
+    value, excpeted = func_get_face_polygon(room_id, floor_ref_string)
+    assert round(value) == round(excpeted)
 
 
 @pytest.mark.parametrize("room_id", [5139071])
@@ -202,7 +196,6 @@ def test_evaluate_clear_height_manual(transaction, room_id, floor_ref_string, ce
         all_clear_heights = []
 
         floor_ref = Reference.ParseFromStableRepresentation(doc, floor_ref_string)
-
         ceil_ref = Reference.ParseFromStableRepresentation(doc, ceiling_ref_string)
 
         floor_face = doc.GetElement(floor_ref.ElementId).GetGeometryObjectFromReference(floor_ref)
