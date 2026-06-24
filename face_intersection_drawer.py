@@ -266,6 +266,64 @@ def get_z_on_planar_face(face, x, y):
     return None
 
 
+def draw_shapely_polygon(poly, doc, sketch_plane, z_height):
+    if not poly or poly.is_empty:
+        return
+    geoms = [poly] if poly.geom_type == 'Polygon' else poly.geoms if poly.geom_type == 'MultiPolygon' else []
+    for g in geoms:
+        coords = list(g.exterior.coords)
+        for i in range(len(coords) - 1):
+            p1 = XYZ(coords[i][0], coords[i][1], z_height)
+            p2 = XYZ(coords[i+1][0], coords[i+1][1], z_height)
+            if p1.DistanceTo(p2) > 0.005:
+                try:
+                    line = Line.CreateBound(p1, p2)
+                    doc.Create.NewModelCurve(line, sketch_plane)
+                except Exception:
+                    pass
+        for hole in g.interiors:
+            h_coords = list(hole.coords)
+            for i in range(len(h_coords) - 1):
+                p1 = XYZ(h_coords[i][0], h_coords[i][1], z_height)
+                p2 = XYZ(h_coords[i+1][0], h_coords[i+1][1], z_height)
+                if p1.DistanceTo(p2) > 0.005:
+                    try:
+                        line = Line.CreateBound(p1, p2)
+                        doc.Create.NewModelCurve(line, sketch_plane)
+                    except Exception:
+                        pass
+
+def get_subtracted_polygon(base_poly, subtract_poly, doc=None, sketch_plane=None, z_height=0.0, create_model_lines=False):
+    """Subtracts one polygon from another and returns the resulting polygon."""
+    if not base_poly:
+        return None
+    if not subtract_poly:
+        result = base_poly
+    else:
+        result = base_poly.difference(subtract_poly)
+        
+    if create_model_lines and doc and sketch_plane and result:
+        draw_shapely_polygon(result, doc, sketch_plane, z_height)
+        
+    return result
+
+
+def get_intersection_polygon(polys, doc=None, sketch_plane=None, z_height=0.0, create_model_lines=False):
+    """Returns the intersection of a list of polygons."""
+    if not polys:
+        return None
+    result = polys[0]
+    for p in polys[1:]:
+        if not p or p.is_empty:
+            return None
+        result = result.intersection(p)
+        
+    if create_model_lines and doc and sketch_plane and result:
+        draw_shapely_polygon(result, doc, sketch_plane, z_height)
+        
+    return result
+
+
 def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, room_poly, sketch_plane, z_height,
                        create_debug_lines=False, debug=False):
     """
@@ -276,9 +334,9 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
         return 0, []
 
     # Perform the 3-way boolean intersection (Room ∩ Floor ∩ Ceiling)
-    intersection = room_poly.intersection(floor_poly).intersection(ceiling_poly)
+    intersection = get_intersection_polygon([room_poly, floor_poly, ceiling_poly])
 
-    if intersection.is_empty:
+    if not intersection or intersection.is_empty:
         return 0, []
 
     # Calculate the area percentage
@@ -464,7 +522,7 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
         accumulated_floors = None
         for data in floors_data:
             if accumulated_floors is not None:
-                data['poly'] = data['poly'].difference(accumulated_floors)
+                data['poly'] = get_subtracted_polygon(data['poly'], accumulated_floors)
                 accumulated_floors = accumulated_floors.union(data['poly'])
             else:
                 accumulated_floors = data['poly']
@@ -482,7 +540,7 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
         accumulated_ceilings = None
         for data in ceilings_data:
             if accumulated_ceilings is not None:
-                data['poly'] = data['poly'].difference(accumulated_ceilings)
+                data['poly'] = get_subtracted_polygon(data['poly'], accumulated_ceilings)
                 accumulated_ceilings = accumulated_ceilings.union(data['poly'])
             else:
                 accumulated_ceilings = data['poly']
