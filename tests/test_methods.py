@@ -21,7 +21,9 @@ from face_intersection_drawer import (
 )
 
 try:
-    from Autodesk.Revit.DB import BuiltInCategory, ElementId, Plane, SketchPlane, XYZ, BuiltInParameter, Transaction
+    from Autodesk.Revit.DB import BuiltInCategory, ElementId, Plane, SketchPlane, XYZ, BuiltInParameter, Transaction, \
+    Reference
+    from Autodesk.Revit.UI.Selection import ObjectType
 except ImportError:
     ...
 
@@ -146,11 +148,11 @@ def test_get_intersection_polygon(transaction, room_id):
         pytest.fail(f"get_intersection_polygon raised {e}")
 
 
-@pytest.mark.parametrize("room_id,expected", [
-    (5139071, 4)
+@pytest.mark.parametrize("room_id,len_floor_faces,len_ceiling_faces", [
+    (5139071, 3, 2)
 ])
 @revit
-def test_auto_find_room_faces(transaction, room_id, expected):
+def test_auto_find_room_faces(transaction, room_id, len_floor_faces, len_ceiling_faces):
     room = get_room(room_id)
     doc = room.Document
     try:
@@ -165,7 +167,7 @@ def test_auto_find_room_faces(transaction, room_id, expected):
         grid_spacing = 1.0 
         
         # Find faces
-        faces = auto_find_room_faces(
+        floor_faces, ceiling_faces = auto_find_room_faces(
             doc=doc, 
             room=room,
             z_height=z_height, 
@@ -176,6 +178,64 @@ def test_auto_find_room_faces(transaction, room_id, expected):
         )
         
         # Assert number of faces (User will replace the expected number)
-        assert len(faces) == expected, f"Expected {expected} faces, but found {len(faces)}"
+        assert len(floor_faces) == len_floor_faces, f"Expected {len_floor_faces} faces, but found {len(floor_faces)}"
+        assert len(ceiling_faces) == len_ceiling_faces, f"Expected {len_ceiling_faces} faces, but found {len(ceiling_faces)}"
     except Exception as e:
         pytest.fail(f"test_auto_find_room_faces raised {e}")
+
+
+@pytest.mark.parametrize("room_id,floor_ref_string,ceiling_ref_string,expected_min,expected_max", [
+    (5139071, "98c13167-7fd2-4c36-9595-69e41fbc742c-013f4e25:1:SURFACE",
+     "3393eaa1-a0ba-4a41-ac18-e76317201435-0153784f:0:SURFACE", 2.630, 2.630), # Correct
+    (5139071, "adc6acde-15c5-4e63-9a28-26ff87808d74-01708d10:0:SURFACE",
+     "9993fd19-1dfb-40a2-a38b-8c58b34923e9-01a2ac84:1:SURFACE", 2.600, 2.600)
+])
+@revit
+def test_evaluate_clear_height_manual(transaction, room_id, floor_ref_string, ceiling_ref_string, expected_min, expected_max):
+    room = get_room(room_id)
+    doc = room.Document
+    try:
+        sketch_plane, z_height = room_sketch_plane(room)
+
+        room_poly = get_room_polygon(room, doc=doc, sketch_plane=sketch_plane, z_height=z_height, create_model_lines=False)
+        
+        all_clear_heights = []
+
+        floor_ref = Reference.ParseFromStableRepresentation(doc, floor_ref_string)
+
+        ceil_ref = Reference.ParseFromStableRepresentation(doc, ceiling_ref_string)
+
+        floor_face = doc.GetElement(floor_ref.ElementId).GetGeometryObjectFromReference(floor_ref)
+        floor_poly = get_face_polygon(floor_face)
+
+        ceil_face = doc.GetElement(ceil_ref.ElementId).GetGeometryObjectFromReference(ceil_ref)
+        ceil_poly = get_face_polygon(ceil_face)
+
+        _, heights = evaluate_face_pair(
+            doc=doc,
+            floor_face=floor_face,
+            floor_poly=floor_poly,
+            ceiling_face=ceil_face,
+            ceiling_poly=ceil_poly,
+            room_poly=room_poly,
+            sketch_plane=sketch_plane,
+            z_height=z_height,
+            create_debug_lines=False,
+            debug=True
+        )
+        if heights:
+            all_clear_heights.extend(heights)
+
+        if all_clear_heights:
+            min_h = min(all_clear_heights)
+            max_h = max(all_clear_heights)
+            print(f"Evaluated heights: min={min_h:.3f}m, max={max_h:.3f}m")
+            
+            # Allow a small tolerance (e.g. 0.01m)
+            assert expected_min - 0.01 <= min_h <= expected_min + 0.01, f"Min height {min_h:.3f} does not match expected {expected_min}"
+            assert expected_max - 0.01 <= max_h <= expected_max + 0.01, f"Max height {max_h:.3f} does not match expected {expected_max}"
+        else:
+            pytest.fail("No clear heights evaluated from the selected faces.")
+            
+    except Exception as e:
+        pytest.fail(f"test_evaluate_clear_height_manual raised {e}")
