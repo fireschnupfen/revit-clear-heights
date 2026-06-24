@@ -170,7 +170,7 @@ def test_auto_find_room_faces(transaction, room_id, len_floor_faces, len_ceiling
             room=room,
             z_height=z_height, 
             room_poly=room_poly, 
-            grid_spacing=5,
+            grid_spacing=4.0,
             create_ray_lines=False, 
             debug=False
         )
@@ -187,38 +187,38 @@ def test_auto_find_room_faces(transaction, room_id, len_floor_faces, len_ceiling
         pytest.fail(f"test_auto_find_room_faces raised {e}")
 
 
-@pytest.mark.parametrize("room_id,expected_pairs", [
-    (6457698, [(38879961, 16542829),(38879961, 29942629),(38879961, 15457563),(38879961, 11868779)])  # Placeholder
-])
 @revit
-def test_get_room_face_pairs(transaction, room_id, expected_pairs):
+def func_get_room_face_pairs(room_id):
     room = get_room(room_id)
     doc = room.Document
-    try:
-        sketch_plane, z_height = room_sketch_plane(room)
-        
-        from face_intersection_drawer import get_room_polygon, get_room_face_pairs
-        
-        # Get room polygon
-        room_poly = get_room_polygon(room, doc=doc, sketch_plane=sketch_plane, z_height=z_height, create_model_lines=False)
-        
-        # Find face pairs
-        floor_refs, ceiling_refs, pairs = get_room_face_pairs(
-            doc=doc, 
-            room=room,
-            z_height=z_height, 
-            room_poly=room_poly, 
-            grid_spacing=5, 
-            create_ray_lines=False, 
-            debug=False
-        )
-        
-        actual_pairs = [(p[0]['element_id'], p[1]['element_id']) for p in pairs]
-        
-        # Sort both lists of tuples to make order-independent comparison
-        assert sorted(actual_pairs) == sorted(expected_pairs), f"Expected {expected_pairs}, but found {actual_pairs}"
-    except Exception as e:
-        pytest.fail(f"test_get_room_face_pairs raised {e}")
+    sketch_plane, z_height = room_sketch_plane(room)
+
+    from face_intersection_drawer import get_room_polygon, get_room_face_pairs
+
+    # Get room polygon
+    room_poly = get_room_polygon(room, doc=doc, sketch_plane=sketch_plane, z_height=z_height,
+                                 create_model_lines=False)
+
+    # Find face pairs
+    floor_refs, ceiling_refs, pairs = get_room_face_pairs(
+        doc=doc,
+        room=room,
+        z_height=z_height,
+        room_poly=room_poly,
+        grid_spacing=4.0,
+        create_ray_lines=False,
+        debug=False
+    )
+
+    return [(p[0]['element_id'], p[1]['element_id']) for p in pairs]
+
+
+@pytest.mark.parametrize("room_id,expected_pairs", [
+    (6457698, [(38879961, 15457563),(38879961, 29942629),(38879961, 11868779),(38879961, 16542829)])  # Placeholder
+])
+def test_get_room_face_pairs(transaction, room_id, expected_pairs):
+    actual_pairs = func_get_room_face_pairs(room_id)
+    assert actual_pairs == expected_pairs
 
 
 @pytest.mark.parametrize("room_id,floor_ref_string,ceiling_ref_string,expected_min,expected_max", [
@@ -231,14 +231,15 @@ def test_get_room_face_pairs(transaction, room_id, expected_pairs):
      "afe9a004-e567-4f94-b1ae-568d92dee429-024f8848:1:SURFACE", 4.010, 4.010)
 ])
 @revit
-def test_evaluate_clear_height_manual(transaction, room_id, floor_ref_string, ceiling_ref_string, expected_min, expected_max):
+def test_evaluate_clear_height_manual(transaction, room_id, floor_ref_string, ceiling_ref_string, expected_min,
+                                      expected_max):
     room = get_room(room_id)
     doc = room.Document
     try:
         sketch_plane, z_height = room_sketch_plane(room)
 
-        room_poly = get_room_polygon(room, doc=doc, sketch_plane=sketch_plane, z_height=z_height, create_model_lines=False)
-        
+        room_poly = get_room_polygon(room, doc=doc, sketch_plane=sketch_plane, z_height=z_height,
+                                     create_model_lines=False)
         all_clear_heights = []
 
         floor_ref = Reference.ParseFromStableRepresentation(doc, floor_ref_string)
@@ -250,7 +251,7 @@ def test_evaluate_clear_height_manual(transaction, room_id, floor_ref_string, ce
         ceil_face = doc.GetElement(ceil_ref.ElementId).GetGeometryObjectFromReference(ceil_ref)
         ceil_poly = get_face_polygon(ceil_face)
 
-        _, heights = evaluate_face_pair(
+        _, heights, _ = evaluate_face_pair(
             doc=doc,
             floor_face=floor_face,
             floor_poly=floor_poly,
@@ -269,12 +270,53 @@ def test_evaluate_clear_height_manual(transaction, room_id, floor_ref_string, ce
             min_h = min(all_clear_heights)
             max_h = max(all_clear_heights)
             print(f"Evaluated heights: min={min_h:.3f}m, max={max_h:.3f}m")
-            
+
             # Allow a small tolerance (e.g. 0.01m)
             assert expected_min - 0.01 <= min_h <= expected_min + 0.01, f"Min height {min_h:.3f} does not match expected {expected_min}"
             assert expected_max - 0.01 <= max_h <= expected_max + 0.01, f"Max height {max_h:.3f} does not match expected {expected_max}"
         else:
             pytest.fail("No clear heights evaluated from the selected faces.")
-            
+
     except Exception as e:
         pytest.fail(f"test_evaluate_clear_height_manual raised {e}")
+
+
+@pytest.mark.parametrize("room_id,expected_heights", [
+    # (5139071, [2.6, 2.63]),
+    (6457698, [3.41, 4.01])
+])
+@revit
+def test_evaluate_room_clear_heights(transaction, room_id, expected_heights):
+    room = get_room(room_id)
+    doc = room.Document
+    try:
+        sketch_plane, z_height = room_sketch_plane(room)
+        
+        from face_intersection_drawer import get_room_polygon, evaluate_room_clear_heights
+        
+        room_poly = get_room_polygon(room, doc=doc, sketch_plane=sketch_plane, z_height=z_height, create_model_lines=False)
+        
+        lines_created, evaluation_results = evaluate_room_clear_heights(
+            doc=doc,
+            room=room,
+            z_height=z_height,
+            room_poly=room_poly,
+            grid_spacing=4.0,
+            create_ray_lines=False,
+            create_debug_lines=False,
+            debug=True,
+            sketch_plane=sketch_plane
+        )
+
+        all_clear_heights = []
+        for result in evaluation_results:
+            all_clear_heights.extend(result['heights'])
+        all_clear_heights = list(set(all_clear_heights))
+
+        # Use small tolerance for float comparison
+        for expected in expected_heights:
+            found = any(abs(expected - actual) <= 0.01 for actual in all_clear_heights)
+            assert found, f"Expected height {expected} not found in evaluated heights {all_clear_heights}"
+
+    except Exception as e:
+        pytest.fail(f"test_evaluate_room_clear_heights raised {e}")

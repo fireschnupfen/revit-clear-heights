@@ -427,19 +427,19 @@ def get_room_face_pairs(doc, room, z_height, room_poly, grid_spacing, create_ray
 
 
 def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, room_poly, sketch_plane, z_height,
-                       create_debug_lines=False, debug=False, area_threshold_pct=8.0):
+                       create_debug_lines=False, debug=False):
     """
     Evaluates the 2D intersection of a floor face, ceiling face, and the room boundary.
     Draws the intersection and evaluates clear heights at the vertices.
     """
     if not floor_poly or not ceiling_poly or floor_poly.is_empty or ceiling_poly.is_empty:
-        return 0, []
+        return 0, [], 0.0
 
     # Perform the 3-way boolean intersection (Room ∩ Floor ∩ Ceiling)
     intersection = get_intersection_polygon([room_poly, floor_poly, ceiling_poly])
 
     if not intersection or intersection.is_empty:
-        return 0, []
+        return 0, [], 0.0
 
     # Calculate the area percentage
     room_area = room_poly.area
@@ -454,7 +454,7 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
     elif intersection.geom_type == 'MultiPolygon':
         geoms = intersection.geoms
     else:
-        return 0, []
+        return 0, [], area_pct
 
     evaluated_points = set()
     lines_created = 0
@@ -519,14 +519,47 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
         intersection_area_m2 = intersection_area * 0.09290304
         print(f"-> Found intersection overlapping {area_pct:.2f}% of the room area (Intersection Area: {intersection_area_m2:.2f} m²). Clear height(s): {height_str}")
 
-    # Introduce threshold: exclude areas representing < threshold of the room from the final evaluation
-    # (they will still be drawn as curves for debugging, but not return heights)
-    if area_pct < area_threshold_pct:
-        if debug:
-            print(f"   (Excluded from final evaluation as {area_pct:.2f}% < {area_threshold_pct}%)")
-        return lines_created, []
+    # Return the evaluated heights with their overlap info (without area threshold filtering)
+    return lines_created, clear_heights, area_pct
 
-    return lines_created, clear_heights
+
+def evaluate_room_clear_heights(doc, room, z_height, room_poly, grid_spacing, create_ray_lines=False, create_debug_lines=False, debug=False, sketch_plane=None):
+    """
+    Evaluates all clear heights for a room by finding faces, pairing them, and evaluating each pair.
+    Returns (total_lines_created, results), where results is a list of dicts: {'heights': [...], 'area_pct': float}.
+    """
+    floor_refs, ceiling_refs, pairs = get_room_face_pairs(doc, room, z_height, room_poly, grid_spacing,
+                                                          create_ray_lines=create_ray_lines, debug=debug)
+    
+    if not floor_refs:
+        if debug:
+            print("No floor faces found.")
+        return 0, []
+
+    if not ceiling_refs:
+        if debug:
+            print("No ceiling/roof faces found.")
+        return 0, []
+
+    total_lines_created = 0
+    results = []
+
+    # Iterate through every combination of (floor face) and (ceiling face)
+    for floor_data, ceiling_data in pairs:
+        lines_created, heights, area_pct = evaluate_face_pair(
+            doc,
+            floor_data['face'], floor_data['poly'],
+            ceiling_data['face'], ceiling_data['poly'],
+            room_poly, sketch_plane, z_height,
+            create_debug_lines=create_debug_lines,
+            debug=debug
+        )
+
+        total_lines_created += lines_created
+        if heights:
+            results.append({'heights': heights, 'area_pct': area_pct})
+            
+    return total_lines_created, results
 
 
 @revit
@@ -589,49 +622,32 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
     t.Start()
 
     try:
-        floor_refs, ceiling_refs, pairs = get_room_face_pairs(doc, room, z_height, room_poly, grid_spacing,
-                                                              create_ray_lines=create_ray_lines, debug=debug)
-        if not floor_refs:
-            if debug:
-                print("No floor faces found.")
-            t.RollBack()
-            return
-
-        if not ceiling_refs:
-            if debug:
-                print("No ceiling/roof faces found.")
-            t.RollBack()
-            return
-
         # 6. Evaluate intersections and draw boundary overlaps
         # Create a flat SketchPlane at the exact calculated z_height
         origin = XYZ(0, 0, z_height)
         plane = Plane.CreateByNormalAndOrigin(XYZ.BasisZ, origin)
         sketch_plane = SketchPlane.Create(doc, plane)
 
-        total_lines_created = 0
-        all_clear_heights = []
+        total_lines_created, evaluation_results = evaluate_room_clear_heights(
+            doc, room, z_height, room_poly, grid_spacing,
+            create_ray_lines=create_ray_lines,
+            create_debug_lines=create_debug_lines,
+            debug=debug,
+            sketch_plane=sketch_plane
+        )
 
-        # Iterate through every combination of (floor face) and (ceiling face)
-        for floor_data, ceiling_data in pairs:
-            lines_created, heights = evaluate_face_pair(
-                doc,
-                floor_data['face'], floor_data['poly'],
-                ceiling_data['face'], ceiling_data['poly'],
-                room_poly, sketch_plane, z_height,
-                create_debug_lines=create_debug_lines,
-                debug=debug,
-                area_threshold_pct=area_threshold_pct
-            )
-
-            total_lines_created += lines_created
-            all_clear_heights.extend(heights)
-
-        if debug:
+        if debug and total_lines_created > 0:
             print(
                 f"Success! Created {total_lines_created} model lines at Z={z_height * 0.3048:.3f}m showing the overlaps.")
 
-        # 7. Print the global minimum and maximum and write to parameter
+        # 7. Apply threshold filter and calculate global minimum and maximum
+        all_clear_heights = []
+        for result in evaluation_results:
+            if result['area_pct'] >= area_threshold_pct:
+                all_clear_heights.extend(result['heights'])
+            elif debug:
+                print(f"   (Excluded from final evaluation as {result['area_pct']:.2f}% < {area_threshold_pct}%)")
+
         if all_clear_heights:
             min_ch = min(all_clear_heights)
             max_ch = max(all_clear_heights)
