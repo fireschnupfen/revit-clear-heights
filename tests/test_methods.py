@@ -57,18 +57,41 @@ def room_sketch_plane(room):
     return sketch_plane, z_height
 
 
-@pytest.mark.parametrize("room_id", [5139071])
 @revit
-def test_get_room_polygon(transaction, room_id):
+def func_get_room_polygon(room_id):
     room = get_room(room_id)
     doc = room.Document
-    try:
-        sketch_plane, z_height = room_sketch_plane(room)
+    sketch_plane, z_height = room_sketch_plane(room)
+    poly = get_room_polygon(room, doc=doc, sketch_plane=sketch_plane, z_height=z_height, create_model_lines=True)
+    expected_area = room.Area
+    return poly.area, expected_area
 
-        get_room_polygon(room, doc=doc, sketch_plane=sketch_plane, z_height=z_height, create_model_lines=True)
-    except Exception as e:
-        pytest.fail(f"get_room_polygon raised {e}")
 
+@pytest.mark.parametrize("room_id", [5139071,6457698])
+def test_get_room_polygon(transaction, room_id):
+    value, excpeted = func_get_room_polygon(room_id)
+    assert round(value) == round(excpeted)
+
+
+@revit
+def func_get_face_polygon(room_id, floor_ref_string):
+    room = get_room(room_id)
+    doc = room.Document
+    sketch_plane, z_height = room_sketch_plane(room)
+    ref = Reference.ParseFromStableRepresentation(doc, floor_ref_string)
+    face = doc.GetElement(ref.ElementId).GetGeometryObjectFromReference(ref)
+    polys = get_face_polygon(face, doc=doc, sketch_plane=sketch_plane, z_height=z_height, create_model_lines=False)
+
+    expected_area = doc.GetElement(ref.ElementId).LookupParameter("Fläche").AsDouble()
+    return polys.area, expected_area
+
+
+@pytest.mark.parametrize("room_id,floor_ref_string", [  # Correct
+    (5139071, "adc6acde-15c5-4e63-9a28-26ff87808d74-01708d10:0:SURFACE")
+])
+def test_get_face_polygon(transaction, room_id, floor_ref_string):
+    value, excpeted = func_get_face_polygon(room_id, floor_ref_string)
+    assert round(value) == round(excpeted)
 
 @revit
 def func_get_face_polygon(room_id, floor_ref_string):
@@ -145,7 +168,8 @@ def test_get_intersection_polygon(transaction, room_id):
 
 
 @pytest.mark.parametrize("room_id,len_floor_faces,len_ceiling_faces", [
-    (5139071, 3, 2)
+    (5139071, 3, 2),
+    (6457698, 1, 3)
 ])
 @revit
 def test_auto_find_room_faces(transaction, room_id, len_floor_faces, len_ceiling_faces):
@@ -159,19 +183,21 @@ def test_auto_find_room_faces(transaction, room_id, len_floor_faces, len_ceiling
         # Get room polygon
         room_poly = get_room_polygon(room, doc=doc, sketch_plane=sketch_plane, z_height=z_height, create_model_lines=False)
         
-        # Grid spacing in feet (e.g., 1.0 = ~30cm)
-        grid_spacing = 1.0 
-        
         # Find faces
         floor_faces, ceiling_faces = auto_find_room_faces(
             doc=doc, 
             room=room,
             z_height=z_height, 
             room_poly=room_poly, 
-            grid_spacing=grid_spacing, 
+            grid_spacing=5,
             create_ray_lines=False, 
             debug=False
         )
+
+        for f in floor_faces:
+            print(f"Floor face: {f.ElementId.Value}")
+        for f in ceiling_faces:
+            print(f"Ceiling face: {f.ElementId.Value}")
         
         # Assert number of faces (User will replace the expected number)
         assert len(floor_faces) == len_floor_faces, f"Expected {len_floor_faces} faces, but found {len(floor_faces)}"
@@ -182,9 +208,12 @@ def test_auto_find_room_faces(transaction, room_id, len_floor_faces, len_ceiling
 
 @pytest.mark.parametrize("room_id,floor_ref_string,ceiling_ref_string,expected_min,expected_max", [
     (5139071, "98c13167-7fd2-4c36-9595-69e41fbc742c-013f4e25:1:SURFACE",
-     "3393eaa1-a0ba-4a41-ac18-e76317201435-0153784f:0:SURFACE", 2.630, 2.630), # Correct
+     "3393eaa1-a0ba-4a41-ac18-e76317201435-0153784f:0:SURFACE", 2.630, 2.630),
     (5139071, "adc6acde-15c5-4e63-9a28-26ff87808d74-01708d10:0:SURFACE",
-     "9993fd19-1dfb-40a2-a38b-8c58b34923e9-01a2ac84:1:SURFACE", 2.600, 2.600)
+     "9993fd19-1dfb-40a2-a38b-8c58b34923e9-01a2ac84:1:SURFACE", 2.600, 2.600),
+
+    (6457698, "c5dfb182-f77a-4523-83f8-3dcc24aa081d-00f93399:0:SURFACE",
+     "afe9a004-e567-4f94-b1ae-568d92dee429-024f8848:1:SURFACE", 4.010, 4.010)
 ])
 @revit
 def test_evaluate_clear_height_manual(transaction, room_id, floor_ref_string, ceiling_ref_string, expected_min, expected_max):

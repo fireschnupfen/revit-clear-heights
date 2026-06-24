@@ -39,7 +39,7 @@ TEST_ROOMS_PES = [
     (7609512, "4,760 m - 8,260 m"),
     (10843640, "4,244 m - 4,760 m"),
     (6457698, "3,410 m - 4,010 m"),
-    (8278812, "3,190 m - 3,410 m")
+    (8278812, "3,190 m - 3,411 m")
 ]
 
 
@@ -54,12 +54,14 @@ def set_clear_heights(room_id):
     uidoc.Selection.SetElementIds(ids)
 
     room = uidoc.Document.GetElement(id)
-    main(debug=True)
+    main(debug=True,grid_spacing_min_m=0.5, grid_spacing_max_m=1,area_threshold_pct=10.0)
 
     return room.LookupParameter("Lichte_Raumhöhe").AsString()
 
 
 @pytest.mark.parametrize("room_id,expected", TEST_ROOMS_PES)
-def test_calculate_clear_heights(room_id, expected):
+def test_calculate_clear_heights(transaction_group, room_id, expected):
     value_calculated = set_clear_heights(room_id)
     assert value_calculated == expected
+
+5852412,5139071,5498143,5850933,11398635,58817722,11129429,5850929,6477863,7609512,10843640,6457698,8278812

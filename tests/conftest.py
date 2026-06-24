@@ -24,6 +24,7 @@ def transaction_group():
     yield
     tg.RollBack()
 
+
 @pytest.fixture
 @revit
 def transaction():

@@ -372,7 +372,7 @@ def get_intersection_polygon(polys, doc=None, sketch_plane=None, z_height=0.0, c
 
 
 def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, room_poly, sketch_plane, z_height,
-                       create_debug_lines=False, debug=False):
+                       create_debug_lines=False, debug=False, area_threshold_pct=8.0):
     """
     Evaluates the 2D intersection of a floor face, ceiling face, and the room boundary.
     Draws the intersection and evaluates clear heights at the vertices.
@@ -464,11 +464,11 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
         intersection_area_m2 = intersection_area * 0.09290304
         print(f"-> Found intersection overlapping {area_pct:.2f}% of the room area (Intersection Area: {intersection_area_m2:.2f} m²). Clear height(s): {height_str}")
 
-    # Introduce threshold: exclude areas representing < 8.0% of the room from the final evaluation
+    # Introduce threshold: exclude areas representing < threshold of the room from the final evaluation
     # (they will still be drawn as curves for debugging, but not return heights)
-    if area_pct < 8.0:
+    if area_pct < area_threshold_pct:
         if debug:
-            print(f"   (Excluded from final evaluation as {area_pct:.2f}% < 8.0%)")
+            print(f"   (Excluded from final evaluation as {area_pct:.2f}% < {area_threshold_pct}%)")
         return lines_created, []
 
     return lines_created, clear_heights
@@ -476,7 +476,7 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
 
 @revit
 def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spacing_min_m=1, grid_spacing_max_m=3,
-         area_min_m2=10.0, area_max_m2=100.0):
+         area_min_m2=10.0, area_max_m2=100.0, area_threshold_pct=8.0):
     doc = __revit__.ActiveUIDocument.Document
     uidoc = __revit__.ActiveUIDocument
 
@@ -602,7 +602,8 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
                     ceiling_data['face'], ceiling_data['poly'],
                     room_poly, sketch_plane, z_height,
                     create_debug_lines=create_debug_lines,
-                    debug=debug
+                    debug=debug,
+                    area_threshold_pct=area_threshold_pct
                 )
 
                 total_lines_created += lines_created
