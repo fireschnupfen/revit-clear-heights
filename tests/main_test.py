@@ -27,9 +27,22 @@ def set_clear_heights(room_id):
     return room.LookupParameter("Lichte_Raumhöhe").AsString()
 
 
-# Test data: (room_id, expected_value)
+# Test data : (room_id, expected_value)
 # Format: "X,XXX m" or "X,XXX m - Y,YYY m" (3 decimal places, space before m)
 TEST_ROOMS = [
+    (5761, "2,700 m"),
+    (5762, "2,700 m"),
+    (5763, "2,700 m"),
+    (5764, "2,700 m"),
+    (5768, "4,115 m - 5,947 m"),
+    (5769, "4,253 m - 4,947 m"),
+    (5770, "3,115 m - 5,234 m"),
+]
+
+
+# Test data from PES_Gebäudemodell: (room_id, expected_value)
+# Format: "X,XXX m" or "X,XXX m - Y,YYY m" (3 decimal places, space before m)
+TEST_ROOMS_PES = [
     (5852412, "3,130 m"),
     (5139071, "2,600 m - 2,630 m"),
     (5498143, "2,600 m"),
