@@ -585,7 +585,7 @@ def round_to_half_cm(value):
 
 @revit
 def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spacing_min_m=1, grid_spacing_max_m=3,
-         area_min_m2=20.0, area_max_m2=100.0, area_threshold_pct=8.0, filter_name=None, area_threshold_m2=10):
+         area_min_m2=10.0, area_max_m2=100.0, area_threshold_pct=8.0, filter_name=None, area_threshold_m2=10):
     doc = __revit__.ActiveUIDocument.Document
     uidoc = __revit__.ActiveUIDocument
 
@@ -791,4 +791,4 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
 
 
 if __name__ == "__main__":
-    main()
+    main(debug=True,filter_name="# IGNORE FOR CLEAR HEIGHT")
