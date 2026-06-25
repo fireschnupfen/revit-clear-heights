@@ -585,7 +585,8 @@ def round_to_half_cm(value):
 
 @revit
 def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spacing_min_m=0.5, grid_spacing_max_m=1.5,
-         area_min_m2=10.0, area_max_m2=100.0, area_threshold_pct=8.0, filter_name=None, area_threshold_m2=10):
+         area_min_m2=10.0, area_max_m2=100.0, area_threshold_pct=8.0, filter_name=None, area_threshold_m2=10,
+         dominant_area_pct_threshold=65.0):
     doc = __revit__.ActiveUIDocument.Document
     uidoc = __revit__.ActiveUIDocument
 
@@ -714,6 +715,8 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
             total_included_area = 0.0
             total_excluded_pct = 0.0
             total_excluded_area = 0.0
+            
+            dominant_height_result = None
 
             if debug and (height_areas or filtered_out_pct > 0):
                 print("\n--- Clear Height Areas Summary ---")
@@ -726,6 +729,10 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
                     key_str = f"{min_h:.3f} m"
                 else:
                     key_str = f"{min_h:.3f} m - {max_h:.3f} m"
+                
+                if pct >= dominant_area_pct_threshold:
+                    rounded_pct = int(round(pct / 5.0)) * 5
+                    dominant_height_result = f"{key_str.replace('.', ',')} (~{rounded_pct}%)"
                 
                 meets_pct_threshold = pct >= area_threshold_pct
                 meets_area_threshold = (area_threshold_m2 is not None and area_m2 >= area_threshold_m2)
@@ -766,8 +773,10 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
                 min_ch = round_to_half_cm(min(all_clear_heights))
                 max_ch = round_to_half_cm(max(all_clear_heights))
 
+                is_range = abs(max_ch - min_ch) >= 0.005
+
                 # Format the result with German locale (comma instead of decimal point)
-                if abs(max_ch - min_ch) < 0.005:
+                if not is_range:
                     result = f"{min_ch:.3f} m".replace(".", ",")
                 else:
                     result = f"{min_ch:.3f} m - {max_ch:.3f} m".replace(".", ",")
@@ -776,6 +785,8 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
                     print("\n--- Clear Heights Summary ---")
                     print(f"Evaluated {len(all_clear_heights)} valid points across all intersecting floor-ceiling pairs.")
                     print(f"Resulting Clear Height: {result}")
+                    if is_range and dominant_height_result:
+                        print(f"Dominant Clear Height (>= {dominant_area_pct_threshold}%): {dominant_height_result}")
 
                 param = room.LookupParameter("Lichte_Raumhöhe")
                 if param:
@@ -785,6 +796,20 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
                 else:
                     if debug:
                         print("Parameter 'Lichte_Raumhöhe' not found.")
+                        
+                param_dom = room.LookupParameter("Lichte_Raumhöhe_Bestimmend")
+                if param_dom:
+                    if is_range and dominant_height_result:
+                        param_dom.Set(dominant_height_result)
+                        if debug:
+                            print("Successfully updated parameter 'Lichte_Raumhöhe_Bestimmend'.")
+                    else:
+                        param_dom.Set("")
+                        if debug:
+                            print("No dominant clear height or single height room. Cleared parameter 'Lichte_Raumhöhe_Bestimmend'.")
+                else:
+                    if debug:
+                        print("Parameter 'Lichte_Raumhöhe_Bestimmend' not found.")
             else:
                 if debug:
                     print("\nNo valid clear heights could be evaluated at the intersection vertices.")
