@@ -585,8 +585,8 @@ def round_to_half_cm(value):
 
 @revit
 def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spacing_min_m=0.5, grid_spacing_max_m=1.5,
-         area_min_m2=10.0, area_max_m2=100.0, area_threshold_pct=8.0, filter_name=None, area_threshold_m2=10,
-         dominant_area_pct_threshold=65.0):
+         area_min_m2=10.0, area_max_m2=100.0, area_threshold_pct=5.0, filter_name=None, area_threshold_m2=10,
+         dominant_area_pct_threshold=50.0, dominant_n_times=2.0):
     doc = __revit__.ActiveUIDocument.Document
     uidoc = __revit__.ActiveUIDocument
 
@@ -731,8 +731,10 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
                     key_str = f"{min_h:.3f} m - {max_h:.3f} m"
                 
                 if pct >= dominant_area_pct_threshold:
-                    rounded_pct = int(round(pct / 5.0)) * 5
-                    dominant_height_result = f"{key_str.replace('.', ',')} (~{rounded_pct}%)"
+                    other_pcts = [d['area_pct'] for k, d in height_areas.items() if k != (min_h, max_h)]
+                    if not other_pcts or all(pct >= p * dominant_n_times for p in other_pcts):
+                        rounded_pct = int(round(pct / 5.0)) * 5
+                        dominant_height_result = f"{key_str.replace('.', ',')} (~{rounded_pct}%)"
                 
                 meets_pct_threshold = pct >= area_threshold_pct
                 meets_area_threshold = (area_threshold_m2 is not None and area_m2 >= area_threshold_m2)
@@ -786,7 +788,7 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
                     print(f"Evaluated {len(all_clear_heights)} valid points across all intersecting floor-ceiling pairs.")
                     print(f"Resulting Clear Height: {result}")
                     if is_range and dominant_height_result:
-                        print(f"Dominant Clear Height (>= {dominant_area_pct_threshold}%): {dominant_height_result}")
+                        print(f"Dominant Clear Height (>= {dominant_area_pct_threshold}% and >= {dominant_n_times}x others): {dominant_height_result}")
 
                 param = room.LookupParameter("Lichte_Raumhöhe")
                 if param:
