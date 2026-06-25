@@ -584,59 +584,23 @@ def round_to_half_cm(value):
 
 
 @revit
-def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spacing_min_m=1, grid_spacing_max_m=3,
+def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spacing_min_m=0.5, grid_spacing_max_m=1.5,
          area_min_m2=10.0, area_max_m2=100.0, area_threshold_pct=8.0, filter_name=None, area_threshold_m2=10):
     doc = __revit__.ActiveUIDocument.Document
     uidoc = __revit__.ActiveUIDocument
 
-    # 1. Get the currently selected room
+    # 1. Get all selected rooms
     selection = uidoc.Selection.GetElementIds()
-    room = None
+    rooms = []
     for eid in selection:
         elem = doc.GetElement(eid)
-        if elem.Category and elem.Category.Id.Value == int(BuiltInCategory.OST_Rooms):
-            room = elem
-            break
+        if elem and elem.Category and elem.Category.Id.Value == int(BuiltInCategory.OST_Rooms):
+            rooms.append(elem)
 
-    if not room:
+    if not rooms:
         if debug:
-            print("Please select a Room before running the script.")
+            print("Please select at least one Room before running the script.")
         return
-
-    # 2. Calculate the target Z height (Level Elevation + Computation Height)
-    level = doc.GetElement(room.LevelId)
-    level_elevation = level.Elevation if level else 0
-
-    computation_height_param = level.get_Parameter(BuiltInParameter.LEVEL_ROOM_COMPUTATION_HEIGHT)
-    computation_height = computation_height_param.AsDouble() if computation_height_param else 0
-
-    small_offset = 0.01  # ~3mm above floor level
-    z_height = level_elevation + computation_height + small_offset
-
-    # 3. Extract room polygon
-    room_poly = get_room_polygon(room)
-    if not room_poly:
-        if debug:
-            print("Could not extract valid boundaries from the room.")
-        return
-
-    # 4. Determine dynamic grid spacing
-    room_area_param = room.get_Parameter(BuiltInParameter.ROOM_AREA)
-    room_area_sqft = room_area_param.AsDouble() if room_area_param else 0
-    room_area_m2 = room_area_sqft * 0.092903
-
-    if room_area_m2 <= area_min_m2:
-        grid_spacing_m = grid_spacing_min_m
-    elif room_area_m2 >= area_max_m2:
-        grid_spacing_m = grid_spacing_max_m
-    else:
-        t = (room_area_m2 - area_min_m2) / (area_max_m2 - area_min_m2)
-        grid_spacing_m = grid_spacing_min_m + t * (grid_spacing_max_m - grid_spacing_min_m)
-
-    grid_spacing = grid_spacing_m * 3.28084  # convert to internal units (feet)
-
-    if debug:
-        print(f"Room area: {room_area_m2:.1f}m2 -> Adaptive Grid Spacing: {grid_spacing_m:.2f}m")
 
     # 4.5 Find FilterElement if filter_name is provided
     element_filter = None
@@ -656,131 +620,174 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
     t.Start()
 
     try:
-        # 6. Evaluate intersections and draw boundary overlaps
-        # Create a flat SketchPlane at the exact calculated z_height
-        origin = XYZ(0, 0, z_height)
-        plane = Plane.CreateByNormalAndOrigin(XYZ.BasisZ, origin)
-        sketch_plane = SketchPlane.Create(doc, plane)
+        for room in rooms:
+            if debug:
+                room_number_param = room.get_Parameter(BuiltInParameter.ROOM_NUMBER)
+                room_name_param = room.get_Parameter(BuiltInParameter.ROOM_NAME)
+                room_number = room_number_param.AsString() if room_number_param else "Unknown"
+                room_name = room_name_param.AsString() if room_name_param else "Unknown"
+                print(f"\n--- Processing Room: {room_name} ({room_number}) ---")
 
-        total_lines_created, evaluation_results = evaluate_room_clear_heights(
-            doc, room, z_height, room_poly, grid_spacing,
-            create_ray_lines=create_ray_lines,
-            create_debug_lines=create_debug_lines,
-            debug=debug,
-            sketch_plane=sketch_plane,
-            element_filter=element_filter
-        )
+            # 2. Calculate the target Z height (Level Elevation + Computation Height)
+            level = doc.GetElement(room.LevelId)
+            level_elevation = level.Elevation if level else 0
 
-        if debug and total_lines_created > 0:
-            print(
-                f"Success! Created {total_lines_created} model lines at Z={z_height * 0.3048:.3f}m showing the overlaps.")
+            computation_height_param = level.get_Parameter(BuiltInParameter.LEVEL_ROOM_COMPUTATION_HEIGHT)
+            computation_height = computation_height_param.AsDouble() if computation_height_param else 0
 
-        # 7. Aggregate areas by height group and apply threshold filter
-        height_areas = {}
-        filtered_out_pct = 0.0
-        filtered_out_area = 0.0
+            small_offset = 0.01  # ~3mm above floor level
+            z_height = level_elevation + computation_height + small_offset
 
-        for result in evaluation_results:
-            area_pct = result['area_pct']
-            heights = result['heights']
-            is_ignored = result.get('is_ignored', False)
-            
-            if heights:
-                if is_ignored:
-                    filtered_out_pct += area_pct
-                    filtered_out_area += (area_pct / 100) * room_area_m2
-                    continue
-
-                min_h = round_to_half_cm(min(heights))
-                max_h = round_to_half_cm(max(heights))
-                group_key = (min_h, max_h)
-                
-                if group_key not in height_areas:
-                    height_areas[group_key] = {'area_pct': 0.0, 'heights': []}
-                
-                height_areas[group_key]['area_pct'] += area_pct
-                height_areas[group_key]['heights'].extend(heights)
-
-        all_clear_heights = []
-        
-        total_included_pct = 0.0
-        total_included_area = 0.0
-        total_excluded_pct = 0.0
-        total_excluded_area = 0.0
-
-        if debug and (height_areas or filtered_out_pct > 0):
-            print("\n--- Clear Height Areas Summary ---")
-
-        for (min_h, max_h), data in sorted(height_areas.items()):
-            pct = data['area_pct']
-            area_m2 = (pct / 100) * room_area_m2
-            
-            if min_h == max_h:
-                key_str = f"{min_h:.3f} m"
-            else:
-                key_str = f"{min_h:.3f} m - {max_h:.3f} m"
-            
-            meets_pct_threshold = pct >= area_threshold_pct
-            meets_area_threshold = (area_threshold_m2 is not None and area_m2 >= area_threshold_m2)
-            
-            if meets_pct_threshold or meets_area_threshold:
-                all_clear_heights.extend(data['heights'])
-                total_included_pct += pct
-                total_included_area += area_m2
+            # 3. Extract room polygon
+            room_poly = get_room_polygon(room)
+            if not room_poly:
                 if debug:
-                    if meets_pct_threshold:
-                        print(f"Clear height {key_str}: {area_m2:.2f} m² ({pct:.2f}%) -> INCLUDED (>= {area_threshold_pct}%)")
-                    else:
-                        print(f"Clear height {key_str}: {area_m2:.2f} m² ({pct:.2f}%) -> INCLUDED (>= {area_threshold_m2} m²)")
+                    print("Could not extract valid boundaries from the room.")
+                continue
+
+            # 4. Determine dynamic grid spacing
+            room_area_param = room.get_Parameter(BuiltInParameter.ROOM_AREA)
+            room_area_sqft = room_area_param.AsDouble() if room_area_param else 0
+            room_area_m2 = room_area_sqft * 0.092903
+
+            if room_area_m2 <= area_min_m2:
+                grid_spacing_m = grid_spacing_min_m
+            elif room_area_m2 >= area_max_m2:
+                grid_spacing_m = grid_spacing_max_m
             else:
-                total_excluded_pct += pct
-                total_excluded_area += area_m2
-                if debug:
-                    reason = f"< {area_threshold_pct}%"
-                    if area_threshold_m2 is not None:
-                        reason += f" and < {area_threshold_m2} m²"
-                    print(f"Clear height {key_str}: {area_m2:.2f} m² ({pct:.2f}%) -> EXCLUDED ({reason})")
+                t_val = (room_area_m2 - area_min_m2) / (area_max_m2 - area_min_m2)
+                grid_spacing_m = grid_spacing_min_m + t_val * (grid_spacing_max_m - grid_spacing_min_m)
 
-        if debug and (height_areas or filtered_out_pct > 0):
-            total_sum_pct = total_included_pct + total_excluded_pct + filtered_out_pct
-            total_sum_area = total_included_area + total_excluded_area + filtered_out_area
-            print(f"---")
-            print(f"Included: {total_included_area:.2f} m² ({total_included_pct:.2f}%)")
-            excl_reason = f"< {area_threshold_pct}%"
-            if area_threshold_m2 is not None:
-                excl_reason += f" and < {area_threshold_m2} m²"
-            print(f"Excluded ({excl_reason}): {total_excluded_area:.2f} m² ({total_excluded_pct:.2f}%)")
-            if filtered_out_pct > 0:
-                print(f"Filtered (Ignored): {filtered_out_area:.2f} m² ({filtered_out_pct:.2f}%)")
-            print(f"Sum:      {total_sum_area:.2f} m² ({total_sum_pct:.2f}%)")
-            print(f"Room Area:{room_area_m2:.2f} m²")
-
-        if all_clear_heights:
-            min_ch = round_to_half_cm(min(all_clear_heights))
-            max_ch = round_to_half_cm(max(all_clear_heights))
-
-            # Format the result with German locale (comma instead of decimal point)
-            if abs(max_ch - min_ch) < 0.005:
-                result = f"{min_ch:.3f} m".replace(".", ",")
-            else:
-                result = f"{min_ch:.3f} m - {max_ch:.3f} m".replace(".", ",")
+            grid_spacing = grid_spacing_m * 3.28084  # convert to internal units (feet)
 
             if debug:
-                print("\n--- Clear Heights Summary ---")
-                print(f"Evaluated {len(all_clear_heights)} valid points across all intersecting floor-ceiling pairs.")
-                print(f"Resulting Clear Height: {result}")
+                print(f"Room area: {room_area_m2:.1f}m2 -> Adaptive Grid Spacing: {grid_spacing_m:.2f}m")
 
-            param = room.LookupParameter("Lichte_Raumhöhe")
-            if param:
-                param.Set(result)
+            # 6. Evaluate intersections and draw boundary overlaps
+            # Create a flat SketchPlane at the exact calculated z_height
+            origin = XYZ(0, 0, z_height)
+            plane = Plane.CreateByNormalAndOrigin(XYZ.BasisZ, origin)
+            sketch_plane = SketchPlane.Create(doc, plane)
+
+            total_lines_created, evaluation_results = evaluate_room_clear_heights(
+                doc, room, z_height, room_poly, grid_spacing,
+                create_ray_lines=create_ray_lines,
+                create_debug_lines=create_debug_lines,
+                debug=debug,
+                sketch_plane=sketch_plane,
+                element_filter=element_filter
+            )
+
+            if debug and total_lines_created > 0:
+                print(
+                    f"Success! Created {total_lines_created} model lines at Z={z_height * 0.3048:.3f}m showing the overlaps.")
+
+            # 7. Aggregate areas by height group and apply threshold filter
+            height_areas = {}
+            filtered_out_pct = 0.0
+            filtered_out_area = 0.0
+
+            for result in evaluation_results:
+                area_pct = result['area_pct']
+                heights = result['heights']
+                is_ignored = result.get('is_ignored', False)
+                
+                if heights:
+                    if is_ignored:
+                        filtered_out_pct += area_pct
+                        filtered_out_area += (area_pct / 100) * room_area_m2
+                        continue
+
+                    min_h = round_to_half_cm(min(heights))
+                    max_h = round_to_half_cm(max(heights))
+                    group_key = (min_h, max_h)
+                    
+                    if group_key not in height_areas:
+                        height_areas[group_key] = {'area_pct': 0.0, 'heights': []}
+                    
+                    height_areas[group_key]['area_pct'] += area_pct
+                    height_areas[group_key]['heights'].extend(heights)
+
+            all_clear_heights = []
+            
+            total_included_pct = 0.0
+            total_included_area = 0.0
+            total_excluded_pct = 0.0
+            total_excluded_area = 0.0
+
+            if debug and (height_areas or filtered_out_pct > 0):
+                print("\n--- Clear Height Areas Summary ---")
+
+            for (min_h, max_h), data in sorted(height_areas.items()):
+                pct = data['area_pct']
+                area_m2 = (pct / 100) * room_area_m2
+                
+                if min_h == max_h:
+                    key_str = f"{min_h:.3f} m"
+                else:
+                    key_str = f"{min_h:.3f} m - {max_h:.3f} m"
+                
+                meets_pct_threshold = pct >= area_threshold_pct
+                meets_area_threshold = (area_threshold_m2 is not None and area_m2 >= area_threshold_m2)
+                
+                if meets_pct_threshold or meets_area_threshold:
+                    all_clear_heights.extend(data['heights'])
+                    total_included_pct += pct
+                    total_included_area += area_m2
+                    if debug:
+                        if meets_pct_threshold:
+                            print(f"Clear height {key_str}: {area_m2:.2f} m² ({pct:.2f}%) -> INCLUDED (>= {area_threshold_pct}%)")
+                        else:
+                            print(f"Clear height {key_str}: {area_m2:.2f} m² ({pct:.2f}%) -> INCLUDED (>= {area_threshold_m2} m²)")
+                else:
+                    total_excluded_pct += pct
+                    total_excluded_area += area_m2
+                    if debug:
+                        reason = f"< {area_threshold_pct}%"
+                        if area_threshold_m2 is not None:
+                            reason += f" and < {area_threshold_m2} m²"
+                        print(f"Clear height {key_str}: {area_m2:.2f} m² ({pct:.2f}%) -> EXCLUDED ({reason})")
+
+            if debug and (height_areas or filtered_out_pct > 0):
+                total_sum_pct = total_included_pct + total_excluded_pct + filtered_out_pct
+                total_sum_area = total_included_area + total_excluded_area + filtered_out_area
+                print(f"---")
+                print(f"Included: {total_included_area:.2f} m² ({total_included_pct:.2f}%)")
+                excl_reason = f"< {area_threshold_pct}%"
+                if area_threshold_m2 is not None:
+                    excl_reason += f" and < {area_threshold_m2} m²"
+                print(f"Excluded ({excl_reason}): {total_excluded_area:.2f} m² ({total_excluded_pct:.2f}%)")
+                if filtered_out_pct > 0:
+                    print(f"Filtered (Ignored): {filtered_out_area:.2f} m² ({filtered_out_pct:.2f}%)")
+                print(f"Sum:      {total_sum_area:.2f} m² ({total_sum_pct:.2f}%)")
+                print(f"Room Area:{room_area_m2:.2f} m²")
+
+            if all_clear_heights:
+                min_ch = round_to_half_cm(min(all_clear_heights))
+                max_ch = round_to_half_cm(max(all_clear_heights))
+
+                # Format the result with German locale (comma instead of decimal point)
+                if abs(max_ch - min_ch) < 0.005:
+                    result = f"{min_ch:.3f} m".replace(".", ",")
+                else:
+                    result = f"{min_ch:.3f} m - {max_ch:.3f} m".replace(".", ",")
+
                 if debug:
-                    print("Successfully updated parameter 'Lichte_Raumhöhe'.")
+                    print("\n--- Clear Heights Summary ---")
+                    print(f"Evaluated {len(all_clear_heights)} valid points across all intersecting floor-ceiling pairs.")
+                    print(f"Resulting Clear Height: {result}")
+
+                param = room.LookupParameter("Lichte_Raumhöhe")
+                if param:
+                    param.Set(result)
+                    if debug:
+                        print("Successfully updated parameter 'Lichte_Raumhöhe'.")
+                else:
+                    if debug:
+                        print("Parameter 'Lichte_Raumhöhe' not found.")
             else:
                 if debug:
-                    print("Parameter 'Lichte_Raumhöhe' not found.")
-        else:
-            if debug:
-                print("\nNo valid clear heights could be evaluated at the intersection vertices.")
+                    print("\nNo valid clear heights could be evaluated at the intersection vertices.")
 
         t.Commit()
 
