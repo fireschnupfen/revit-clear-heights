@@ -8,7 +8,8 @@ try:
         Transaction, XYZ, Line, Plane, SketchPlane, BuiltInCategory,
         BuiltInParameter, SpatialElementBoundaryOptions,
         SpatialElementBoundaryLocation, PlanarFace, View3D, FilteredElementCollector,
-        ReferenceIntersector, FindReferenceTarget, ElementMulticategoryFilter
+        ReferenceIntersector, FindReferenceTarget, ElementMulticategoryFilter,
+        ParameterFilterElement, ElementId
     )
     from System.Collections.Generic import List
 except ImportError:
@@ -529,10 +530,10 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
     return lines_created, clear_heights, area_pct
 
 
-def evaluate_room_clear_heights(doc, room, z_height, room_poly, grid_spacing, create_ray_lines=False, create_debug_lines=False, debug=False, sketch_plane=None):
+def evaluate_room_clear_heights(doc, room, z_height, room_poly, grid_spacing, create_ray_lines=False, create_debug_lines=False, debug=False, sketch_plane=None, element_filter=None):
     """
     Evaluates all clear heights for a room by finding faces, pairing them, and evaluating each pair.
-    Returns (total_lines_created, results), where results is a list of dicts: {'heights': [...], 'area_pct': float}.
+    Returns (total_lines_created, results), where results is a list of dicts: {'heights': [...], 'area_pct': float, 'is_ignored': bool}.
     """
     floor_refs, ceiling_refs, pairs = get_room_face_pairs(doc, room, z_height, room_poly, grid_spacing,
                                                           create_ray_lines=create_ray_lines, debug=debug)
@@ -561,9 +562,18 @@ def evaluate_room_clear_heights(doc, room, z_height, room_poly, grid_spacing, cr
             debug=debug
         )
 
+        is_ignored = False
+        if element_filter:
+            f_id = ElementId(floor_data['element_id'])
+            c_id = ElementId(ceiling_data['element_id'])
+            if element_filter.PassesFilter(doc, f_id) or element_filter.PassesFilter(doc, c_id):
+                is_ignored = True
+                if debug and area_pct > 0:
+                    print(f"   -> This pair is IGNORED due to filter match.")
+
         total_lines_created += lines_created
         if heights:
-            results.append({'heights': heights, 'area_pct': area_pct})
+            results.append({'heights': heights, 'area_pct': area_pct, 'is_ignored': is_ignored})
             
     return total_lines_created, results
 
@@ -575,7 +585,7 @@ def round_to_half_cm(value):
 
 @revit
 def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spacing_min_m=1, grid_spacing_max_m=3,
-         area_min_m2=10.0, area_max_m2=100.0, area_threshold_pct=8.0):
+         area_min_m2=10.0, area_max_m2=100.0, area_threshold_pct=8.0, filter_name=None):
     doc = __revit__.ActiveUIDocument.Document
     uidoc = __revit__.ActiveUIDocument
 
@@ -628,6 +638,19 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
     if debug:
         print(f"Room area: {room_area_m2:.1f}m2 -> Adaptive Grid Spacing: {grid_spacing_m:.2f}m")
 
+    # 4.5 Find FilterElement if filter_name is provided
+    element_filter = None
+    if filter_name:
+        filter_collector = FilteredElementCollector(doc).OfClass(ParameterFilterElement)
+        for f in filter_collector:
+            if f.Name == filter_name:
+                element_filter = f.GetElementFilter()
+                if debug:
+                    print(f"Found filter '{filter_name}'.")
+                break
+        if not element_filter and debug:
+            print(f"Warning: Filter '{filter_name}' not found.")
+
     # 5. Start transaction and autoselect faces
     t = Transaction(doc, "Calculate Clear Heights")
     t.Start()
@@ -644,7 +667,8 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
             create_ray_lines=create_ray_lines,
             create_debug_lines=create_debug_lines,
             debug=debug,
-            sketch_plane=sketch_plane
+            sketch_plane=sketch_plane,
+            element_filter=element_filter
         )
 
         if debug and total_lines_created > 0:
@@ -653,12 +677,20 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
 
         # 7. Aggregate areas by height group and apply threshold filter
         height_areas = {}
+        filtered_out_pct = 0.0
+        filtered_out_area = 0.0
 
         for result in evaluation_results:
             area_pct = result['area_pct']
             heights = result['heights']
+            is_ignored = result.get('is_ignored', False)
             
             if heights:
+                if is_ignored:
+                    filtered_out_pct += area_pct
+                    filtered_out_area += (area_pct / 100) * room_area_m2
+                    continue
+
                 min_h = round_to_half_cm(min(heights))
                 max_h = round_to_half_cm(max(heights))
                 group_key = (min_h, max_h)
@@ -676,7 +708,7 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
         total_excluded_pct = 0.0
         total_excluded_area = 0.0
 
-        if debug and height_areas:
+        if debug and (height_areas or filtered_out_pct > 0):
             print("\n--- Clear Height Areas Summary ---")
 
         for (min_h, max_h), data in sorted(height_areas.items()):
@@ -700,12 +732,14 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
                 if debug:
                     print(f"Clear height {key_str}: {area_m2:.2f} m² ({pct:.2f}%) -> EXCLUDED (< {area_threshold_pct}%)")
 
-        if debug and height_areas:
-            total_sum_pct = total_included_pct + total_excluded_pct
-            total_sum_area = total_included_area + total_excluded_area
+        if debug and (height_areas or filtered_out_pct > 0):
+            total_sum_pct = total_included_pct + total_excluded_pct + filtered_out_pct
+            total_sum_area = total_included_area + total_excluded_area + filtered_out_area
             print(f"---")
             print(f"Included: {total_included_area:.2f} m² ({total_included_pct:.2f}%)")
-            print(f"Excluded: {total_excluded_area:.2f} m² ({total_excluded_pct:.2f}%)")
+            print(f"Excluded (< {area_threshold_pct}%): {total_excluded_area:.2f} m² ({total_excluded_pct:.2f}%)")
+            if filtered_out_pct > 0:
+                print(f"Filtered (Ignored): {filtered_out_area:.2f} m² ({filtered_out_pct:.2f}%)")
             print(f"Sum:      {total_sum_area:.2f} m² ({total_sum_pct:.2f}%)")
             print(f"Room Area:{room_area_m2:.2f} m²")
 
