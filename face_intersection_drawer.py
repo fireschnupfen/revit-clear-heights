@@ -585,7 +585,7 @@ def round_to_half_cm(value):
 
 @revit
 def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spacing_min_m=1, grid_spacing_max_m=3,
-         area_min_m2=10.0, area_max_m2=100.0, area_threshold_pct=8.0, filter_name=None):
+         area_min_m2=20.0, area_max_m2=100.0, area_threshold_pct=8.0, filter_name=None, area_threshold_m2=10):
     doc = __revit__.ActiveUIDocument.Document
     uidoc = __revit__.ActiveUIDocument
 
@@ -720,24 +720,36 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
             else:
                 key_str = f"{min_h:.3f} m - {max_h:.3f} m"
             
-            if pct >= area_threshold_pct:
+            meets_pct_threshold = pct >= area_threshold_pct
+            meets_area_threshold = (area_threshold_m2 is not None and area_m2 >= area_threshold_m2)
+            
+            if meets_pct_threshold or meets_area_threshold:
                 all_clear_heights.extend(data['heights'])
                 total_included_pct += pct
                 total_included_area += area_m2
                 if debug:
-                    print(f"Clear height {key_str}: {area_m2:.2f} m² ({pct:.2f}%) -> INCLUDED")
+                    if meets_pct_threshold:
+                        print(f"Clear height {key_str}: {area_m2:.2f} m² ({pct:.2f}%) -> INCLUDED (>= {area_threshold_pct}%)")
+                    else:
+                        print(f"Clear height {key_str}: {area_m2:.2f} m² ({pct:.2f}%) -> INCLUDED (>= {area_threshold_m2} m²)")
             else:
                 total_excluded_pct += pct
                 total_excluded_area += area_m2
                 if debug:
-                    print(f"Clear height {key_str}: {area_m2:.2f} m² ({pct:.2f}%) -> EXCLUDED (< {area_threshold_pct}%)")
+                    reason = f"< {area_threshold_pct}%"
+                    if area_threshold_m2 is not None:
+                        reason += f" and < {area_threshold_m2} m²"
+                    print(f"Clear height {key_str}: {area_m2:.2f} m² ({pct:.2f}%) -> EXCLUDED ({reason})")
 
         if debug and (height_areas or filtered_out_pct > 0):
             total_sum_pct = total_included_pct + total_excluded_pct + filtered_out_pct
             total_sum_area = total_included_area + total_excluded_area + filtered_out_area
             print(f"---")
             print(f"Included: {total_included_area:.2f} m² ({total_included_pct:.2f}%)")
-            print(f"Excluded (< {area_threshold_pct}%): {total_excluded_area:.2f} m² ({total_excluded_pct:.2f}%)")
+            excl_reason = f"< {area_threshold_pct}%"
+            if area_threshold_m2 is not None:
+                excl_reason += f" and < {area_threshold_m2} m²"
+            print(f"Excluded ({excl_reason}): {total_excluded_area:.2f} m² ({total_excluded_pct:.2f}%)")
             if filtered_out_pct > 0:
                 print(f"Filtered (Ignored): {filtered_out_area:.2f} m² ({filtered_out_pct:.2f}%)")
             print(f"Sum:      {total_sum_area:.2f} m² ({total_sum_pct:.2f}%)")
