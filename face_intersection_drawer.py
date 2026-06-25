@@ -651,13 +651,63 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
             print(
                 f"Success! Created {total_lines_created} model lines at Z={z_height * 0.3048:.3f}m showing the overlaps.")
 
-        # 7. Apply threshold filter and calculate global minimum and maximum
-        all_clear_heights = []
+        # 7. Aggregate areas by height group and apply threshold filter
+        height_areas = {}
+
         for result in evaluation_results:
-            if result['area_pct'] >= area_threshold_pct:
-                all_clear_heights.extend(result['heights'])
-            elif debug:
-                print(f"   (Excluded from final evaluation as {result['area_pct']:.2f}% < {area_threshold_pct}%)")
+            area_pct = result['area_pct']
+            heights = result['heights']
+            
+            if heights:
+                min_h = round_to_half_cm(min(heights))
+                max_h = round_to_half_cm(max(heights))
+                group_key = (min_h, max_h)
+                
+                if group_key not in height_areas:
+                    height_areas[group_key] = {'area_pct': 0.0, 'heights': []}
+                
+                height_areas[group_key]['area_pct'] += area_pct
+                height_areas[group_key]['heights'].extend(heights)
+
+        all_clear_heights = []
+        
+        total_included_pct = 0.0
+        total_included_area = 0.0
+        total_excluded_pct = 0.0
+        total_excluded_area = 0.0
+
+        if debug and height_areas:
+            print("\n--- Clear Height Areas Summary ---")
+
+        for (min_h, max_h), data in sorted(height_areas.items()):
+            pct = data['area_pct']
+            area_m2 = (pct / 100) * room_area_m2
+            
+            if min_h == max_h:
+                key_str = f"{min_h:.3f} m"
+            else:
+                key_str = f"{min_h:.3f} m - {max_h:.3f} m"
+            
+            if pct >= area_threshold_pct:
+                all_clear_heights.extend(data['heights'])
+                total_included_pct += pct
+                total_included_area += area_m2
+                if debug:
+                    print(f"Clear height {key_str}: {area_m2:.2f} m² ({pct:.2f}%) -> INCLUDED")
+            else:
+                total_excluded_pct += pct
+                total_excluded_area += area_m2
+                if debug:
+                    print(f"Clear height {key_str}: {area_m2:.2f} m² ({pct:.2f}%) -> EXCLUDED (< {area_threshold_pct}%)")
+
+        if debug and height_areas:
+            total_sum_pct = total_included_pct + total_excluded_pct
+            total_sum_area = total_included_area + total_excluded_area
+            print(f"---")
+            print(f"Included: {total_included_area:.2f} m² ({total_included_pct:.2f}%)")
+            print(f"Excluded: {total_excluded_area:.2f} m² ({total_excluded_pct:.2f}%)")
+            print(f"Sum:      {total_sum_area:.2f} m² ({total_sum_pct:.2f}%)")
+            print(f"Room Area:{room_area_m2:.2f} m²")
 
         if all_clear_heights:
             min_ch = round_to_half_cm(min(all_clear_heights))

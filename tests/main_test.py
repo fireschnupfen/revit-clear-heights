@@ -40,7 +40,9 @@ TEST_ROOMS_PES = [
     (10843640, "4,245 m - 4,760 m"),
     (6457698, "2,185 m - 4,010 m"),
     (8278812, "3,190 m - 3,410 m"),
-    (6457414, "3,100 m - 3,120 m")
+    (6457414, '3,800 m - 4,305 m'),
+    (6651359, '3,850 m - 3,980 m'),
+    (6457503,'3,380 m - 3,620 m')
 ]
 
 
@@ -55,7 +57,7 @@ def set_clear_heights(room_id):
     uidoc.Selection.SetElementIds(ids)
 
     room = uidoc.Document.GetElement(id)
-    main(debug=True,grid_spacing_min_m=0.5, grid_spacing_max_m=3,area_threshold_pct=8.0)
+    main(debug=True,grid_spacing_min_m=0.5, grid_spacing_max_m=1.5,area_threshold_pct=8.0)
 
     return room.LookupParameter("Lichte_Raumhöhe").AsString()
 
