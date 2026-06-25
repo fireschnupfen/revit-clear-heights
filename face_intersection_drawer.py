@@ -70,7 +70,7 @@ def get_closest_valid_ref(doc, refs, max_distance, require_upward_normal):
     return closest_ref
 
 
-def auto_find_room_faces(doc, room, z_height, room_poly, grid_spacing, create_ray_lines=False, debug=False):
+def auto_find_room_faces(doc, room, z_height, room_poly, grid_spacing, create_ray_lines=False, debug=False, ray_length_multiplicator=1.5):
     """Automatically find floor and ceiling faces for a given room using ray casting."""
     view_3d = get_3d_view_by_name(doc, "RAY_CASTING_VIEW")
     if not view_3d:
@@ -87,7 +87,7 @@ def auto_find_room_faces(doc, room, z_height, room_poly, grid_spacing, create_ra
 
     unbounded_height_param = room.get_Parameter(BuiltInParameter.ROOM_HEIGHT)
     unbounded_height = unbounded_height_param.AsDouble() if unbounded_height_param else 10
-    max_ray_distance = unbounded_height * 1.5
+    max_ray_distance = unbounded_height * ray_length_multiplicator
 
     minx, miny, maxx, maxy = room_poly.bounds
     grid_points = []
@@ -372,13 +372,14 @@ def get_intersection_polygon(polys, doc=None, sketch_plane=None, z_height=0.0, c
     return result
 
 
-def get_room_face_pairs(doc, room, z_height, room_poly, grid_spacing, create_ray_lines=False, debug=False):
+def get_room_face_pairs(doc, room, z_height, room_poly, grid_spacing, create_ray_lines=False, debug=False, ray_length_multiplicator=1.5):
     """
     Runs auto face detection and then pairs them together.
     Returns (floor_refs, ceiling_refs, pairs), where pairs is a list of (floor_data, ceiling_data) dictionaries.
     """
     floor_refs, ceiling_refs = auto_find_room_faces(doc, room, z_height, room_poly, grid_spacing,
-                                                    create_ray_lines=create_ray_lines, debug=debug)
+                                                    create_ray_lines=create_ray_lines, debug=debug,
+                                                    ray_length_multiplicator=ray_length_multiplicator)
     
     if not floor_refs or not ceiling_refs:
         return floor_refs, ceiling_refs, []
@@ -530,13 +531,14 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
     return lines_created, clear_heights, area_pct
 
 
-def evaluate_room_clear_heights(doc, room, z_height, room_poly, grid_spacing, create_ray_lines=False, create_debug_lines=False, debug=False, sketch_plane=None, element_filter=None):
+def evaluate_room_clear_heights(doc, room, z_height, room_poly, grid_spacing, create_ray_lines=False, create_debug_lines=False, debug=False, sketch_plane=None, element_filter=None, ray_length_multiplicator=1.5):
     """
     Evaluates all clear heights for a room by finding faces, pairing them, and evaluating each pair.
     Returns (total_lines_created, results), where results is a list of dicts: {'heights': [...], 'area_pct': float, 'is_ignored': bool}.
     """
     floor_refs, ceiling_refs, pairs = get_room_face_pairs(doc, room, z_height, room_poly, grid_spacing,
-                                                          create_ray_lines=create_ray_lines, debug=debug)
+                                                          create_ray_lines=create_ray_lines, debug=debug,
+                                                          ray_length_multiplicator=ray_length_multiplicator)
     
     if not floor_refs:
         if debug:
@@ -586,7 +588,7 @@ def round_to_half_cm(value):
 @revit
 def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spacing_min_m=0.5, grid_spacing_max_m=1.5,
          area_min_m2=10.0, area_max_m2=100.0, area_threshold_pct=5.0, filter_name=None, area_threshold_m2=10,
-         dominant_area_pct_threshold=50.0, dominant_n_times=2.0):
+         dominant_area_pct_threshold=50.0, dominant_n_times=2.0, ray_length_multiplicator=1.5):
     doc = __revit__.ActiveUIDocument.Document
     uidoc = __revit__.ActiveUIDocument
 
@@ -676,7 +678,8 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
                 create_debug_lines=create_debug_lines,
                 debug=debug,
                 sketch_plane=sketch_plane,
-                element_filter=element_filter
+                element_filter=element_filter,
+                ray_length_multiplicator=ray_length_multiplicator
             )
 
             if debug and total_lines_created > 0:
