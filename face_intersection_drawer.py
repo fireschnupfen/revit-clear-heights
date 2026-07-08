@@ -427,6 +427,8 @@ def get_room_face_pairs(doc, room, z_height, room_poly, grid_spacing, create_ray
     pairs = []
     for floor_data in floors_data:
         for ceiling_data in ceilings_data:
+            if floor_data['element_id'] == ceiling_data['element_id']:
+                continue
             pairs.append((floor_data, ceiling_data))
             
     return floor_refs, ceiling_refs, pairs

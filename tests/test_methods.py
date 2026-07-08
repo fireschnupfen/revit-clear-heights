@@ -150,7 +150,8 @@ def get_intersection_polygon(transaction, room_id):
 
 @pytest.mark.parametrize("room_id,len_floor_faces,len_ceiling_faces", [
     (5139071, 2, 2),
-    (6457698, 1, 4)
+    (6457698, 1, 4),
+    (5854103, 5, 5)
 ])
 @revit
 def test_auto_find_room_faces(transaction, room_id, len_floor_faces, len_ceiling_faces):
@@ -170,7 +171,7 @@ def test_auto_find_room_faces(transaction, room_id, len_floor_faces, len_ceiling
             room=room,
             z_height=z_height, 
             room_poly=room_poly, 
-            grid_spacing=4.0,
+            grid_spacing=1.0,
             create_ray_lines=False, 
             debug=False
         )
@@ -181,8 +182,8 @@ def test_auto_find_room_faces(transaction, room_id, len_floor_faces, len_ceiling
             print(f"Ceiling face: {f.ElementId.Value}")
         
         # Assert number of faces (User will replace the expected number)
-        assert len(floor_faces) == len_floor_faces, f"Expected {len_floor_faces} faces, but found {len(floor_faces)}"
-        assert len(ceiling_faces) == len_ceiling_faces, f"Expected {len_ceiling_faces} faces, but found {len(ceiling_faces)}"
+        assert len(floor_faces) == len_floor_faces, f"Expected {len_floor_faces} Floor faces, but found {len(floor_faces)}"
+        assert len(ceiling_faces) == len_ceiling_faces, f"Expected {len_ceiling_faces} Ceiling faces, but found {len(ceiling_faces)}"
     except Exception as e:
         pytest.fail(f"test_auto_find_room_faces raised {e}")
 
@@ -214,9 +215,9 @@ def func_get_room_face_pairs(room_id):
 
 
 @pytest.mark.parametrize("room_id,expected_pairs", [
-    (6457698, [(38879961, 15457563),(38879961, 29942629),(38879961, 11868779),(38879961, 16542829)])  # Placeholder
+    # (6457698, [(38879961, 15457563),(38879961, 29942629),(38879961, 11868779),(38879961, 16542829)]),
+    (5854103, [(6038401, 64030791),(6038401, 64030799),(6038401, 64030806),(6038401, 64030826),(6038415, 64030791),(6038415, 64030799),(6038415, 64030806),(6038415, 64030826),(6038424, 64030791),(6038424, 64030799),(6038424, 64030806),(6038424, 64030826),(6038455, 64030791),(6038455, 64030799),(6038455, 64030806),(6038455, 64030826),(64030826, 64030791),(64030826, 64030799),(64030826, 64030806)])
 ])
-@revit
 def test_get_room_face_pairs(transaction, room_id, expected_pairs):
     actual_pairs = func_get_room_face_pairs(room_id)
     assert sorted(actual_pairs) == sorted(expected_pairs)
