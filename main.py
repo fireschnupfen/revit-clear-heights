@@ -442,13 +442,13 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
     Draws the intersection and evaluates clear heights at the vertices.
     """
     if not floor_poly or not ceiling_poly or floor_poly.is_empty or ceiling_poly.is_empty:
-        return 0, [], 0.0
+        return 0, [], 0.0, [], []
 
     # Perform the 3-way boolean intersection (Room ∩ Floor ∩ Ceiling)
     intersection = get_intersection_polygon([room_poly, floor_poly, ceiling_poly])
 
     if not intersection or intersection.is_empty:
-        return 0, [], 0.0
+        return 0, [], 0.0, [], []
 
     # Calculate the area percentage
     room_area = room_poly.area
@@ -465,7 +465,7 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
     elif intersection.geom_type == 'GeometryCollection':
         geoms = [g for g in intersection.geoms if g.geom_type in ('Polygon', 'MultiPolygon')]
     else:
-        return 0, [], area_pct
+        return 0, [], area_pct, [], []
 
     evaluated_points = set()
     lines_created = 0
@@ -505,6 +505,8 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
                     lines_created += 1
 
     clear_heights = []
+    floor_elevations = []
+    ceiling_elevations = []
     # Evaluate clear heights for this pair at the intersection vertices
     for x, y in evaluated_points:
         z1 = get_z_on_planar_face(floor_face, x, y)
@@ -514,6 +516,8 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
             clear_height_ft = abs(z1 - z2)
             clear_height_m = clear_height_ft * 0.3048
             clear_heights.append(clear_height_m)
+            floor_elevations.append(z1 * 0.3048)
+            ceiling_elevations.append(z2 * 0.3048)
 
     # Prepare the height string for the output
     if clear_heights:
@@ -531,7 +535,7 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
         print(f"-> Found intersection overlapping {area_pct:.2f}% of the room area (Intersection Area: {intersection_area_m2:.2f} m²). Clear height(s): {height_str}")
 
     # Return the evaluated heights with their overlap info (without area threshold filtering)
-    return lines_created, clear_heights, area_pct
+    return lines_created, clear_heights, area_pct, floor_elevations, ceiling_elevations
 
 
 def evaluate_room_clear_heights(doc, room, z_height, room_poly, grid_spacing, create_ray_lines=False, create_debug_lines=False, debug=False, sketch_plane=None, element_filter=None, ray_length_multiplicator=1.5, ray_casting_view_name="RAY_CASTING_VIEW"):
@@ -559,7 +563,7 @@ def evaluate_room_clear_heights(doc, room, z_height, room_poly, grid_spacing, cr
 
     # Iterate through every combination of (floor face) and (ceiling face)
     for floor_data, ceiling_data in pairs:
-        lines_created, heights, area_pct = evaluate_face_pair(
+        lines_created, heights, area_pct, f_elevs, c_elevs = evaluate_face_pair(
             doc,
             floor_data['face'], floor_data['poly'],
             ceiling_data['face'], ceiling_data['poly'],
@@ -579,7 +583,7 @@ def evaluate_room_clear_heights(doc, room, z_height, room_poly, grid_spacing, cr
 
         total_lines_created += lines_created
         if heights:
-            results.append({'heights': heights, 'area_pct': area_pct, 'is_ignored': is_ignored})
+            results.append({'heights': heights, 'area_pct': area_pct, 'is_ignored': is_ignored, 'f_elevs': f_elevs, 'c_elevs': c_elevs})
             
     return total_lines_created, results
 
@@ -594,7 +598,7 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
          area_min_m2=10.0, area_max_m2=100.0, area_threshold_pct=5.0, filter_name=None, area_threshold_m2=10,
          dominant_area_pct_threshold=50.0, dominant_n_times=2.0, ray_length_multiplicator=1.5,
          clear_height_param_name="Lichte_Raumhöhe", dominant_clear_height_param_name="Lichte_Raumhöhe_Bestimmend",
-         ray_casting_view_name="RAY_CASTING_VIEW"):
+         ray_casting_view_name="Berechnung Raumhöhen", lower_elevation_param_name="KK_FFB", upper_elevation_param_name="UK_FD"):
     doc = __revit__.ActiveUIDocument.Document
     uidoc = __revit__.ActiveUIDocument
 
@@ -702,6 +706,8 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
                 area_pct = result['area_pct']
                 heights = result['heights']
                 is_ignored = result.get('is_ignored', False)
+                f_elevs = result.get('f_elevs', [])
+                c_elevs = result.get('c_elevs', [])
                 
                 if heights:
                     if is_ignored:
@@ -714,12 +720,16 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
                     group_key = (min_h, max_h)
                     
                     if group_key not in height_areas:
-                        height_areas[group_key] = {'area_pct': 0.0, 'heights': []}
+                        height_areas[group_key] = {'area_pct': 0.0, 'heights': [], 'f_elevs': [], 'c_elevs': []}
                     
                     height_areas[group_key]['area_pct'] += area_pct
                     height_areas[group_key]['heights'].extend(heights)
+                    height_areas[group_key]['f_elevs'].extend(f_elevs)
+                    height_areas[group_key]['c_elevs'].extend(c_elevs)
 
             all_clear_heights = []
+            all_floor_elevations = []
+            all_ceiling_elevations = []
             
             total_included_pct = 0.0
             total_included_area = 0.0
@@ -751,6 +761,8 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
                 
                 if meets_pct_threshold or meets_area_threshold:
                     all_clear_heights.extend(data['heights'])
+                    all_floor_elevations.extend(data['f_elevs'])
+                    all_ceiling_elevations.extend(data['c_elevs'])
                     total_included_pct += pct
                     total_included_area += area_m2
                     if debug:
@@ -824,6 +836,34 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
                     else:
                         if debug:
                             print(f"Parameter '{dominant_clear_height_param_name}' not found.")
+
+                if lower_elevation_param_name and all_floor_elevations:
+                    min_floor = round_to_half_cm(min(all_floor_elevations))
+                    max_floor = round_to_half_cm(max(all_floor_elevations))
+                    is_floor_range = abs(max_floor - min_floor) >= 0.005
+                    lower_result = f"{min_floor:.3f} m".replace(".", ",") if not is_floor_range else f"{min_floor:.3f} m - {max_floor:.3f} m".replace(".", ",")
+                    param_lower = room.LookupParameter(lower_elevation_param_name)
+                    if param_lower:
+                        param_lower.Set(lower_result)
+                        if debug:
+                            print(f"Successfully updated parameter '{lower_elevation_param_name}'.")
+                    else:
+                        if debug:
+                            print(f"Parameter '{lower_elevation_param_name}' not found.")
+
+                if upper_elevation_param_name and all_ceiling_elevations:
+                    min_ceil = round_to_half_cm(min(all_ceiling_elevations))
+                    max_ceil = round_to_half_cm(max(all_ceiling_elevations))
+                    is_ceil_range = abs(max_ceil - min_ceil) >= 0.005
+                    upper_result = f"{min_ceil:.3f} m".replace(".", ",") if not is_ceil_range else f"{min_ceil:.3f} m - {max_ceil:.3f} m".replace(".", ",")
+                    param_upper = room.LookupParameter(upper_elevation_param_name)
+                    if param_upper:
+                        param_upper.Set(upper_result)
+                        if debug:
+                            print(f"Successfully updated parameter '{upper_elevation_param_name}'.")
+                    else:
+                        if debug:
+                            print(f"Parameter '{upper_elevation_param_name}' not found.")
             else:
                 if debug:
                     print("\nNo valid clear heights could be evaluated at the intersection vertices.")
@@ -837,4 +877,15 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
 
 
 if __name__ == "__main__":
-    main(debug=True,filter_name="# IGNORE FOR CLEAR HEIGHT")
+    main(clear_height_param_name="Rohe_Raumhöhe", 
+         dominant_clear_height_param_name="Rohe_Raumhöhe_Bestimmend",
+         ray_casting_view_name="Berechnung Rohe Raumhöhen", 
+         lower_elevation_param_name="OK_RFB", 
+         upper_elevation_param_name="UK_RD",
+         ray_length_multiplicator=1.0,)
+    
+    # main(clear_height_param_name="Lichte_Raumhöhe", 
+    #      dominant_clear_height_param_name="Lichte_Raumhöhe_Bestimmend",
+    #      ray_casting_view_name="Berechnung Lichte Raumhöhen", 
+    #      lower_elevation_param_name="OK_FFB", 
+    #      upper_elevation_param_name="UK_FD")
