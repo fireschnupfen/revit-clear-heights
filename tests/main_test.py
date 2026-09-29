@@ -1,6 +1,6 @@
 import pytest
 from revit_rpc import revit
-from face_intersection_drawer import main
+from main import main
 
 try:
     from System.Collections.Generic import List

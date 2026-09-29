@@ -70,12 +70,12 @@ def get_closest_valid_ref(doc, refs, max_distance, require_upward_normal):
     return closest_ref
 
 
-def auto_find_room_faces(doc, room, z_height, room_poly, grid_spacing, create_ray_lines=False, debug=False, ray_length_multiplicator=1.5):
+def auto_find_room_faces(doc, room, z_height, room_poly, grid_spacing, create_ray_lines=False, debug=False, ray_length_multiplicator=1.5, ray_casting_view_name="RAY_CASTING_VIEW"):
     """Automatically find floor and ceiling faces for a given room using ray casting."""
-    view_3d = get_3d_view_by_name(doc, "RAY_CASTING_VIEW")
+    view_3d = get_3d_view_by_name(doc, ray_casting_view_name)
     if not view_3d:
         if debug:
-            print("3D view 'RAY_CASTING_VIEW' not found.")
+            print(f"3D view '{ray_casting_view_name}' not found.")
         return [], []
 
     categories = List[BuiltInCategory]()
@@ -372,14 +372,15 @@ def get_intersection_polygon(polys, doc=None, sketch_plane=None, z_height=0.0, c
     return result
 
 
-def get_room_face_pairs(doc, room, z_height, room_poly, grid_spacing, create_ray_lines=False, debug=False, ray_length_multiplicator=1.5):
+def get_room_face_pairs(doc, room, z_height, room_poly, grid_spacing, create_ray_lines=False, debug=False, ray_length_multiplicator=1.5, ray_casting_view_name="RAY_CASTING_VIEW"):
     """
     Runs auto face detection and then pairs them together.
     Returns (floor_refs, ceiling_refs, pairs), where pairs is a list of (floor_data, ceiling_data) dictionaries.
     """
     floor_refs, ceiling_refs = auto_find_room_faces(doc, room, z_height, room_poly, grid_spacing,
                                                     create_ray_lines=create_ray_lines, debug=debug,
-                                                    ray_length_multiplicator=ray_length_multiplicator)
+                                                    ray_length_multiplicator=ray_length_multiplicator,
+                                                    ray_casting_view_name=ray_casting_view_name)
     
     if not floor_refs or not ceiling_refs:
         return floor_refs, ceiling_refs, []
@@ -533,14 +534,15 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
     return lines_created, clear_heights, area_pct
 
 
-def evaluate_room_clear_heights(doc, room, z_height, room_poly, grid_spacing, create_ray_lines=False, create_debug_lines=False, debug=False, sketch_plane=None, element_filter=None, ray_length_multiplicator=1.5):
+def evaluate_room_clear_heights(doc, room, z_height, room_poly, grid_spacing, create_ray_lines=False, create_debug_lines=False, debug=False, sketch_plane=None, element_filter=None, ray_length_multiplicator=1.5, ray_casting_view_name="RAY_CASTING_VIEW"):
     """
     Evaluates all clear heights for a room by finding faces, pairing them, and evaluating each pair.
     Returns (total_lines_created, results), where results is a list of dicts: {'heights': [...], 'area_pct': float, 'is_ignored': bool}.
     """
     floor_refs, ceiling_refs, pairs = get_room_face_pairs(doc, room, z_height, room_poly, grid_spacing,
                                                           create_ray_lines=create_ray_lines, debug=debug,
-                                                          ray_length_multiplicator=ray_length_multiplicator)
+                                                          ray_length_multiplicator=ray_length_multiplicator,
+                                                          ray_casting_view_name=ray_casting_view_name)
     
     if not floor_refs:
         if debug:
@@ -590,7 +592,9 @@ def round_to_half_cm(value):
 @revit
 def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spacing_min_m=0.5, grid_spacing_max_m=1.5,
          area_min_m2=10.0, area_max_m2=100.0, area_threshold_pct=5.0, filter_name=None, area_threshold_m2=10,
-         dominant_area_pct_threshold=50.0, dominant_n_times=2.0, ray_length_multiplicator=1.5):
+         dominant_area_pct_threshold=50.0, dominant_n_times=2.0, ray_length_multiplicator=1.5,
+         clear_height_param_name="Lichte_Raumhöhe", dominant_clear_height_param_name="Lichte_Raumhöhe_Bestimmend",
+         ray_casting_view_name="RAY_CASTING_VIEW"):
     doc = __revit__.ActiveUIDocument.Document
     uidoc = __revit__.ActiveUIDocument
 
@@ -681,7 +685,8 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
                 debug=debug,
                 sketch_plane=sketch_plane,
                 element_filter=element_filter,
-                ray_length_multiplicator=ray_length_multiplicator
+                ray_length_multiplicator=ray_length_multiplicator,
+                ray_casting_view_name=ray_casting_view_name
             )
 
             if debug and total_lines_created > 0:
@@ -795,28 +800,30 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
                     if is_range and dominant_height_result:
                         print(f"Dominant Clear Height (>= {dominant_area_pct_threshold}% and >= {dominant_n_times}x others): {dominant_height_result}")
 
-                param = room.LookupParameter("Lichte_Raumhöhe")
-                if param:
-                    param.Set(result)
-                    if debug:
-                        print("Successfully updated parameter 'Lichte_Raumhöhe'.")
-                else:
-                    if debug:
-                        print("Parameter 'Lichte_Raumhöhe' not found.")
-                        
-                param_dom = room.LookupParameter("Lichte_Raumhöhe_Bestimmend")
-                if param_dom:
-                    if is_range and dominant_height_result:
-                        param_dom.Set(dominant_height_result)
+                if clear_height_param_name:
+                    param = room.LookupParameter(clear_height_param_name)
+                    if param:
+                        param.Set(result)
                         if debug:
-                            print("Successfully updated parameter 'Lichte_Raumhöhe_Bestimmend'.")
+                            print(f"Successfully updated parameter '{clear_height_param_name}'.")
                     else:
-                        param_dom.Set("")
                         if debug:
-                            print("No dominant clear height or single height room. Cleared parameter 'Lichte_Raumhöhe_Bestimmend'.")
-                else:
-                    if debug:
-                        print("Parameter 'Lichte_Raumhöhe_Bestimmend' not found.")
+                            print(f"Parameter '{clear_height_param_name}' not found.")
+                        
+                if dominant_clear_height_param_name:
+                    param_dom = room.LookupParameter(dominant_clear_height_param_name)
+                    if param_dom:
+                        if is_range and dominant_height_result:
+                            param_dom.Set(dominant_height_result)
+                            if debug:
+                                print(f"Successfully updated parameter '{dominant_clear_height_param_name}'.")
+                        else:
+                            param_dom.Set("")
+                            if debug:
+                                print(f"No dominant clear height or single height room. Cleared parameter '{dominant_clear_height_param_name}'.")
+                    else:
+                        if debug:
+                            print(f"Parameter '{dominant_clear_height_param_name}' not found.")
             else:
                 if debug:
                     print("\nNo valid clear heights could be evaluated at the intersection vertices.")

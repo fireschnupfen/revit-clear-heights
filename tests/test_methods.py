@@ -7,7 +7,7 @@ from revit_rpc import revit
 # Mock imports if needed, or just let them fail and be mocked
 # Let's mock the Revit elements and call the functions
 
-from face_intersection_drawer import (
+from main import (
     get_3d_view_by_name,
     get_closest_valid_ref,
     auto_find_room_faces,
@@ -102,7 +102,7 @@ def get_subtracted_polygon(transaction, room_id):
     try:
         sketch_plane, z_height = room_sketch_plane(room)
         
-        from face_intersection_drawer import get_face_polygon, get_subtracted_polygon
+        from main import get_face_polygon, get_subtracted_polygon
         from Autodesk.Revit.UI.Selection import ObjectType
         import sys
         
@@ -129,7 +129,7 @@ def get_intersection_polygon(transaction, room_id):
     try:
         sp, z_height = room_sketch_plane(room)
         
-        from face_intersection_drawer import get_face_polygon, get_intersection_polygon
+        from main import get_face_polygon, get_intersection_polygon
         from Autodesk.Revit.UI.Selection import ObjectType
         import sys
         
@@ -160,7 +160,7 @@ def test_auto_find_room_faces(transaction, room_id, len_floor_faces, len_ceiling
     try:
         sketch_plane, z_height = room_sketch_plane(room)
         
-        from face_intersection_drawer import auto_find_room_faces, get_room_polygon
+        from main import auto_find_room_faces, get_room_polygon
         
         # Get room polygon
         room_poly = get_room_polygon(room, doc=doc, sketch_plane=sketch_plane, z_height=z_height, create_model_lines=False)
@@ -194,7 +194,7 @@ def func_get_room_face_pairs(room_id):
     doc = room.Document
     sketch_plane, z_height = room_sketch_plane(room)
 
-    from face_intersection_drawer import get_room_polygon, get_room_face_pairs
+    from main import get_room_polygon, get_room_face_pairs
 
     # Get room polygon
     room_poly = get_room_polygon(room, doc=doc, sketch_plane=sketch_plane, z_height=z_height,
@@ -233,7 +233,7 @@ def test_face_pair_contains_ref_strings(transaction, room_id, floor_ref_string, 
     try:
         sketch_plane, z_height = room_sketch_plane(room)
         
-        from face_intersection_drawer import get_room_polygon, get_room_face_pairs
+        from main import get_room_polygon, get_room_face_pairs
         room_poly = get_room_polygon(room, doc=doc, sketch_plane=sketch_plane, z_height=z_height, create_model_lines=False)
         
         _, _, pairs = get_room_face_pairs(
@@ -325,7 +325,7 @@ def test_evaluate_room_clear_heights(transaction, room_id, expected_heights):
     try:
         sketch_plane, z_height = room_sketch_plane(room)
         
-        from face_intersection_drawer import get_room_polygon, evaluate_room_clear_heights
+        from main import get_room_polygon, evaluate_room_clear_heights
         
         room_poly = get_room_polygon(room, doc=doc, sketch_plane=sketch_plane, z_height=z_height, create_model_lines=False)
         
@@ -346,7 +346,7 @@ def test_evaluate_room_clear_heights(transaction, room_id, expected_heights):
             all_clear_heights.extend(result['heights'])
             
         if all_clear_heights:
-            from face_intersection_drawer import round_to_half_cm
+            from main import round_to_half_cm
             min_h = round_to_half_cm(min(all_clear_heights))
             max_h = round_to_half_cm(max(all_clear_heights))
             
