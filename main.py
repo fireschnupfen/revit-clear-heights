@@ -436,7 +436,7 @@ def get_room_face_pairs(doc, room, z_height, room_poly, grid_spacing, create_ray
 
 
 def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, room_poly, sketch_plane, z_height,
-                       create_debug_lines=False, debug=False):
+                       create_debug_lines=False, debug=False, range_delimiter="-"):
     """
     Evaluates the 2D intersection of a floor face, ceiling face, and the room boundary.
     Draws the intersection and evaluates clear heights at the vertices.
@@ -524,9 +524,9 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
         min_h = min(clear_heights)
         max_h = max(clear_heights)
         if abs(max_h - min_h) > 0.005:
-            height_str = f"{min_h:.3f}m - {max_h:.3f}m"
+            height_str = f"{format_height_value(min_h)}m {range_delimiter} {format_height_value(max_h)}m"
         else:
-            height_str = f"{min_h:.3f}m"
+            height_str = f"{format_height_value(min_h)}m"
     else:
         height_str = "None"
 
@@ -538,7 +538,7 @@ def evaluate_face_pair(doc, floor_face, floor_poly, ceiling_face, ceiling_poly, 
     return lines_created, clear_heights, area_pct, floor_elevations, ceiling_elevations
 
 
-def evaluate_room_clear_heights(doc, room, z_height, room_poly, grid_spacing, create_ray_lines=False, create_debug_lines=False, debug=False, sketch_plane=None, element_filter=None, ray_length_multiplicator=1.5, ray_casting_view_name="RAY_CASTING_VIEW"):
+def evaluate_room_clear_heights(doc, room, z_height, room_poly, grid_spacing, create_ray_lines=False, create_debug_lines=False, debug=False, sketch_plane=None, element_filter=None, ray_length_multiplicator=1.5, ray_casting_view_name="RAY_CASTING_VIEW", range_delimiter="-"):
     """
     Evaluates all clear heights for a room by finding faces, pairing them, and evaluating each pair.
     Returns (total_lines_created, results), where results is a list of dicts: {'heights': [...], 'area_pct': float, 'is_ignored': bool}.
@@ -569,7 +569,8 @@ def evaluate_room_clear_heights(doc, room, z_height, room_poly, grid_spacing, cr
             ceiling_data['face'], ceiling_data['poly'],
             room_poly, sketch_plane, z_height,
             create_debug_lines=create_debug_lines,
-            debug=debug
+            debug=debug,
+            range_delimiter=range_delimiter
         )
 
         is_ignored = False
@@ -592,13 +593,23 @@ def round_to_half_cm(value):
     """Rounds the value to the nearest 0.005 (0.5 cm)."""
     return round(value * 200) / 200
 
+def format_height_value(value):
+    """Formats a value to 2 decimal places, with 5 as superscript if present."""
+    rounded = round_to_half_cm(value)
+    str_val = f"{rounded:.3f}".replace(".", ",")
+    if str_val.endswith("5"):
+        return str_val[:-1] + "⁵"
+    else:
+        return str_val[:-1]
+
 
 @revit
 def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spacing_min_m=0.5, grid_spacing_max_m=1.5,
          area_min_m2=10.0, area_max_m2=100.0, area_threshold_pct=5.0, filter_name=None, area_threshold_m2=10,
          dominant_area_pct_threshold=50.0, dominant_n_times=2.0, ray_length_multiplicator=1.5,
          clear_height_param_name="Lichte_Raumhöhe", dominant_clear_height_param_name="Lichte_Raumhöhe_Bestimmend",
-         ray_casting_view_name="Berechnung Raumhöhen", lower_elevation_param_name="KK_FFB", upper_elevation_param_name="UK_FD"):
+         ray_casting_view_name="RAY_CASTING_VIEW", lower_elevation_param_name=None, upper_elevation_param_name=None,
+         range_delimiter="-"):
     doc = __revit__.ActiveUIDocument.Document
     uidoc = __revit__.ActiveUIDocument
 
@@ -690,7 +701,8 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
                 sketch_plane=sketch_plane,
                 element_filter=element_filter,
                 ray_length_multiplicator=ray_length_multiplicator,
-                ray_casting_view_name=ray_casting_view_name
+                ray_casting_view_name=ray_casting_view_name,
+                range_delimiter=range_delimiter
             )
 
             if debug and total_lines_created > 0:
@@ -746,15 +758,15 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
                 area_m2 = (pct / 100) * room_area_m2
                 
                 if min_h == max_h:
-                    key_str = f"{min_h:.3f} m"
+                    key_str = f"{format_height_value(min_h)} m"
                 else:
-                    key_str = f"{min_h:.3f} m - {max_h:.3f} m"
+                    key_str = f"{format_height_value(min_h)} m - {format_height_value(max_h)} m"
                 
                 if pct >= dominant_area_pct_threshold:
                     other_pcts = [d['area_pct'] for k, d in height_areas.items() if k != (min_h, max_h)]
                     if not other_pcts or all(pct >= p * dominant_n_times for p in other_pcts):
                         rounded_pct = int(round(pct / 5.0)) * 5
-                        dominant_height_result = f"{key_str.replace('.', ',')} (~{rounded_pct}%)"
+                        dominant_height_result = f"{key_str} (~{rounded_pct}%)"
                 
                 meets_pct_threshold = pct >= area_threshold_pct
                 meets_area_threshold = (area_threshold_m2 is not None and area_m2 >= area_threshold_m2)
@@ -801,9 +813,9 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
 
                 # Format the result with German locale (comma instead of decimal point)
                 if not is_range:
-                    result = f"{min_ch:.3f} m".replace(".", ",")
+                    result = f"{format_height_value(min_ch)} m"
                 else:
-                    result = f"{min_ch:.3f} m - {max_ch:.3f} m".replace(".", ",")
+                    result = f"{format_height_value(min_ch)} m - {format_height_value(max_ch)} m"
 
                 if debug:
                     print("\n--- Clear Heights Summary ---")
@@ -841,7 +853,7 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
                     min_floor = round_to_half_cm(min(all_floor_elevations))
                     max_floor = round_to_half_cm(max(all_floor_elevations))
                     is_floor_range = abs(max_floor - min_floor) >= 0.005
-                    lower_result = f"{min_floor:.3f} m".replace(".", ",") if not is_floor_range else f"{min_floor:.3f} m - {max_floor:.3f} m".replace(".", ",")
+                    lower_result = f"{format_height_value(min_floor)} m" if not is_floor_range else f"{format_height_value(min_floor)} m - {format_height_value(max_floor)} m"
                     param_lower = room.LookupParameter(lower_elevation_param_name)
                     if param_lower:
                         param_lower.Set(lower_result)
@@ -855,7 +867,7 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
                     min_ceil = round_to_half_cm(min(all_ceiling_elevations))
                     max_ceil = round_to_half_cm(max(all_ceiling_elevations))
                     is_ceil_range = abs(max_ceil - min_ceil) >= 0.005
-                    upper_result = f"{min_ceil:.3f} m".replace(".", ",") if not is_ceil_range else f"{min_ceil:.3f} m - {max_ceil:.3f} m".replace(".", ",")
+                    upper_result = f"{format_height_value(min_ceil)} m" if not is_ceil_range else f"{format_height_value(min_ceil)} m - {format_height_value(max_ceil)} m"
                     param_upper = room.LookupParameter(upper_elevation_param_name)
                     if param_upper:
                         param_upper.Set(upper_result)
@@ -877,15 +889,18 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
 
 
 if __name__ == "__main__":
-    main(clear_height_param_name="Rohe_Raumhöhe", 
-         dominant_clear_height_param_name="Rohe_Raumhöhe_Bestimmend",
-         ray_casting_view_name="Berechnung Rohe Raumhöhen", 
-         lower_elevation_param_name="OK_RFB", 
-         upper_elevation_param_name="UK_RD",
-         ray_length_multiplicator=1.0,)
+    print("Hello world!")
+
+    # main(clear_height_param_name="Rohe_Raumhöhe", 
+    #      dominant_clear_height_param_name="Rohe_Raumhöhe_Bestimmend",
+    #      ray_casting_view_name="Berechnung Rohe Raumhöhen", 
+    #      lower_elevation_param_name="OK_RFB", 
+    #      upper_elevation_param_name="UK_RD",
+    #      ray_length_multiplicator=1.0,)
     
-    # main(clear_height_param_name="Lichte_Raumhöhe", 
-    #      dominant_clear_height_param_name="Lichte_Raumhöhe_Bestimmend",
-    #      ray_casting_view_name="Berechnung Lichte Raumhöhen", 
-    #      lower_elevation_param_name="OK_FFB", 
-    #      upper_elevation_param_name="UK_FD")
+    main(clear_height_param_name="Lichte_Raumhöhe", 
+         dominant_clear_height_param_name="Lichte_Raumhöhe_Bestimmend",
+         ray_casting_view_name="Berechnung Lichte Raumhöhen", 
+         lower_elevation_param_name="OK_FFB", 
+         upper_elevation_param_name="UK_FD",
+         ray_length_multiplicator=1.0,)
