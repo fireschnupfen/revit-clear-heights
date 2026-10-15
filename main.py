@@ -18,6 +18,77 @@ except ImportError:
 __revit__: str
 
 
+def robust_difference(p1, p2):
+    if not p1 or p1.is_empty: return p1
+    if not p2 or p2.is_empty: return p1
+    try:
+        res = p1.difference(p2)
+        if not res.is_valid: res = make_valid(res)
+        return res
+    except Exception:
+        try:
+            res = make_valid(p1).difference(make_valid(p2))
+            if not res.is_valid: res = make_valid(res)
+            return res
+        except Exception:
+            try:
+                res = p1.buffer(0).difference(p2.buffer(0))
+                if not res.is_valid: res = make_valid(res)
+                return res
+            except Exception:
+                return p1
+
+def robust_intersection(p1, p2):
+    if not p1 or p1.is_empty: return None
+    if not p2 or p2.is_empty: return None
+    try:
+        res = p1.intersection(p2)
+        if not res.is_valid: res = make_valid(res)
+        return res
+    except Exception:
+        try:
+            res = make_valid(p1).intersection(make_valid(p2))
+            if not res.is_valid: res = make_valid(res)
+            return res
+        except Exception:
+            try:
+                res = p1.buffer(0).intersection(p2.buffer(0))
+                if not res.is_valid: res = make_valid(res)
+                return res
+            except Exception:
+                return None
+
+def robust_union(p1, p2):
+    if not p1 or p1.is_empty: return p2
+    if not p2 or p2.is_empty: return p1
+    try:
+        res = p1.union(p2)
+        if not res.is_valid: res = make_valid(res)
+        return res
+    except Exception:
+        try:
+            res = make_valid(p1).union(make_valid(p2))
+            if not res.is_valid: res = make_valid(res)
+            return res
+        except Exception:
+            try:
+                res = p1.buffer(0).union(p2.buffer(0))
+                if not res.is_valid: res = make_valid(res)
+                return res
+            except Exception:
+                return p1
+
+def robust_contains(p1, p2):
+    if not p1 or p1.is_empty or not p2 or p2.is_empty: return False
+    try:
+        return p1.contains(p2) or p1.covers(p2)
+    except Exception:
+        try:
+            return p1.buffer(0).contains(p2.buffer(0)) or p1.buffer(0).covers(p2.buffer(0))
+        except Exception:
+            return False
+
+
 def get_3d_view_by_name(doc, view_name):
     """Get a 3D view by its name."""
     collector = FilteredElementCollector(doc).OfClass(View3D)
@@ -212,7 +283,7 @@ def get_face_polygon(face, doc=None, sketch_plane=None, z_height=0.0, create_mod
     for p in polys:
         is_hole = False
         for outer in outer_polys:
-            if outer.contains(p) or outer.covers(p):
+            if robust_contains(outer, p):
                 holes.append(p)
                 is_hole = True
                 break
@@ -224,13 +295,17 @@ def get_face_polygon(face, doc=None, sketch_plane=None, z_height=0.0, create_mod
     for outer in outer_polys:
         current_outer = outer
         for hole in holes:
-            if current_outer.contains(hole) or current_outer.covers(hole):
-                current_outer = current_outer.difference(hole)
-        final_outers.append(current_outer)
+            if robust_contains(current_outer, hole):
+                current_outer = robust_difference(current_outer, hole)
+        if current_outer and not current_outer.is_empty:
+            final_outers.append(current_outer)
 
     # Union all the final outer polygons to create a MultiPolygon or Polygon
     from shapely.ops import unary_union
-    combined_poly = unary_union(final_outers)
+    try:
+        combined_poly = unary_union(final_outers)
+    except Exception:
+        combined_poly = unary_union([p.buffer(0) for p in final_outers])
 
     if create_model_lines and doc and sketch_plane and combined_poly:
         draw_shapely_polygon(combined_poly, doc, sketch_plane, z_height)
@@ -278,7 +353,7 @@ def get_room_polygon(room, doc=None, sketch_plane=None, z_height=0.0, create_mod
     for p in polys:
         is_hole = False
         for outer in outer_polys:
-            if outer.contains(p) or outer.covers(p):
+            if robust_contains(outer, p):
                 holes.append(p)
                 is_hole = True
                 break
@@ -290,13 +365,17 @@ def get_room_polygon(room, doc=None, sketch_plane=None, z_height=0.0, create_mod
     for outer in outer_polys:
         current_outer = outer
         for hole in holes:
-            if current_outer.contains(hole) or current_outer.covers(hole):
-                current_outer = current_outer.difference(hole)
-        final_outers.append(current_outer)
+            if robust_contains(current_outer, hole):
+                current_outer = robust_difference(current_outer, hole)
+        if current_outer and not current_outer.is_empty:
+            final_outers.append(current_outer)
 
     # Union all the final outer polygons to create a MultiPolygon or Polygon
     from shapely.ops import unary_union
-    combined_poly = unary_union(final_outers)
+    try:
+        combined_poly = unary_union(final_outers)
+    except Exception:
+        combined_poly = unary_union([p.buffer(0) for p in final_outers])
 
     if create_model_lines and doc and sketch_plane and combined_poly:
         draw_shapely_polygon(combined_poly, doc, sketch_plane, z_height)
@@ -351,12 +430,7 @@ def draw_shapely_polygon(poly, doc, sketch_plane, z_height):
 
 def get_subtracted_polygon(base_poly, subtract_poly, doc=None, sketch_plane=None, z_height=0.0, create_model_lines=False):
     """Subtracts one polygon from another and returns the resulting polygon."""
-    if not base_poly:
-        return None
-    if not subtract_poly:
-        result = base_poly
-    else:
-        result = base_poly.difference(subtract_poly)
+    result = robust_difference(base_poly, subtract_poly)
         
     if create_model_lines and doc and sketch_plane and result:
         draw_shapely_polygon(result, doc, sketch_plane, z_height)
@@ -370,9 +444,9 @@ def get_intersection_polygon(polys, doc=None, sketch_plane=None, z_height=0.0, c
         return None
     result = polys[0]
     for p in polys[1:]:
-        if not p or p.is_empty:
+        result = robust_intersection(result, p)
+        if not result or result.is_empty:
             return None
-        result = result.intersection(p)
         
     if create_model_lines and doc and sketch_plane and result:
         draw_shapely_polygon(result, doc, sketch_plane, z_height)
@@ -408,7 +482,7 @@ def get_room_face_pairs(doc, room, z_height, room_poly, grid_spacing, create_ray
         if accumulated_floors is not None:
             data['poly'] = get_subtracted_polygon(data['poly'], accumulated_floors)
             if data['poly'] and not data['poly'].is_empty:
-                accumulated_floors = accumulated_floors.union(data['poly'])
+                accumulated_floors = robust_union(accumulated_floors, data['poly'])
         else:
             if data['poly'] and not data['poly'].is_empty:
                 accumulated_floors = data['poly']
@@ -428,7 +502,7 @@ def get_room_face_pairs(doc, room, z_height, room_poly, grid_spacing, create_ray
         if accumulated_ceilings is not None:
             data['poly'] = get_subtracted_polygon(data['poly'], accumulated_ceilings)
             if data['poly'] and not data['poly'].is_empty:
-                accumulated_ceilings = accumulated_ceilings.union(data['poly'])
+                accumulated_ceilings = robust_union(accumulated_ceilings, data['poly'])
         else:
             if data['poly'] and not data['poly'].is_empty:
                 accumulated_ceilings = data['poly']
@@ -906,7 +980,8 @@ if __name__ == "__main__":
          ray_casting_view_name="Berechnung Rohe Raumhöhen", 
          lower_elevation_param_name="OK_RFB", 
          upper_elevation_param_name="UK_RD",
-         ray_length_multiplicator=1.2,)
+         ray_length_multiplicator=1.2,
+         debug=True)
     
     main(clear_height_param_name="Lichte_Raumhöhe", 
          # dominant_clear_height_param_name="Lichte_Raumhöhe_Bestimmend",
