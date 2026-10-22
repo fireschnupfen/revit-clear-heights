@@ -13,7 +13,7 @@ except ImportError:
 from .geometry import get_room_polygon
 from .evaluation import evaluate_room_clear_heights, round_to_half_cm, format_height_value
 
-__revit__: str
+doc: object
 
 
 def calculate_clear_heights(debug=False, create_debug_lines=False, create_ray_lines=False,
@@ -31,8 +31,6 @@ def calculate_clear_heights(debug=False, create_debug_lines=False, create_ray_li
     Calculate clear heights for all rooms with area > 0 in the active Revit document
     and write results back to room parameters.
     """
-    doc = __revit__.ActiveUIDocument.Document
-
     # 1. Get all rooms in the document
     collector = FilteredElementCollector(doc).OfCategory(BuiltInCategory.OST_Rooms)
     rooms = []

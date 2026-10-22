@@ -7,8 +7,6 @@ import sys
 import argparse
 from .core import main
 
-__revit__: str
-
 
 def cli():
     parser = argparse.ArgumentParser(description="Calculate clear heights for Revit rooms.")

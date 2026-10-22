@@ -35,7 +35,6 @@ from .shapes import (
 )
 
 __version__ = "0.1.0"
-__revit__: str
 
 __all__ = [
     "__version__",

@@ -10,8 +10,6 @@ except ImportError:
 from .geometry import get_intersection_polygon, get_z_on_planar_face
 from .ray_casting import get_room_face_pairs
 
-__revit__: str
-
 
 def round_to_half_cm(value):
     """Rounds the value to the nearest 0.005 (0.5 cm)."""

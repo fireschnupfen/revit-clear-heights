@@ -21,8 +21,6 @@ except ImportError:
 
 from .geometry import get_face_polygon, get_subtracted_polygon, robust_union
 
-__revit__: str
-
 
 def get_3d_view_by_name(doc, view_name):
     """Get a 3D view by its name."""

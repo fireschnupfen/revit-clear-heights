@@ -15,8 +15,6 @@ try:
 except ImportError:
     pass
 
-__revit__: str
-
 
 def robust_difference(p1, p2):
     """Safely compute difference p1 - p2 with fallback repair."""
