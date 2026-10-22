@@ -28,11 +28,6 @@ from .evaluation import (
     evaluate_face_pair,
     evaluate_room_clear_heights,
 )
-from .shapes import (
-    clean_coords,
-    create_curve_loops_from_polygon,
-    create_clear_height_shapes,
-)
 
 __version__ = "0.1.0"
 
@@ -59,8 +54,5 @@ __all__ = [
     "format_height_value",
     "evaluate_face_pair",
     "evaluate_room_clear_heights",
-    "clean_coords",
-    "create_curve_loops_from_polygon",
-    "create_clear_height_shapes",
 ]
 

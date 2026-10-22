@@ -1,6 +1,6 @@
 # revit-clear-heights
 
-A Python package and toolkit for Autodesk Revit that automatically calculates the **clear height** (*lichte Raumhöhe*) of rooms and writes the results directly into Revit room parameters. It also includes utilities for room volume solid geometry (`DirectShape`) creation.
+A Python package and toolkit for Autodesk Revit that automatically calculates the **clear height** (*lichte Raumhöhe*) of rooms and writes the results directly into Revit room parameters.
 
 ---
 
@@ -11,8 +11,7 @@ A Python package and toolkit for Autodesk Revit that automatically calculates th
 - **Adaptive grid spacing** — Ray grid density scales automatically based on room floor area.
 - **Smart height aggregation** — Groups height results into buckets, filters negligible areas (by percentage or absolute m²), and identifies dominant height zones.
 - **Parameter write-back** — Writes the calculated height range to `Lichte_Raumhöhe` and dominant height to `Lichte_Raumhöhe_Bestimmend`.
-- **DirectShape creation** — Creates 3D solid `DirectShape` massing/geometry elements from room clear height volumes.
-- **Full CLI & Python API** — Usable as an installed Python package, via CLI (`python -m revit_clear_heights`), or as a script (`main.py`).
+- **Full CLI & Python API** — Usable as an installed Python package or via CLI (`python -m revit_clear_heights`).
 
 ---
 
@@ -22,21 +21,15 @@ A Python package and toolkit for Autodesk Revit that automatically calculates th
 revit-clear-heights/
 ├── pyproject.toml                 # Package definition, build configuration & dependencies
 ├── README.md                      # Documentation
-├── AGENT.md                       # Assistant guidelines and Revit environment rules
-├── main.py                        # Script entry point & re-export module
-├── src/
-│   └── revit_clear_heights/
-│       ├── __init__.py            # Package root, exports & __version__
-│       ├── __main__.py            # CLI entry point (python -m revit_clear_heights)
-│       ├── core.py                # Main workflow: calculate_clear_heights() & main()
-│       ├── geometry.py            # Shapely polygon operations & 2D geometry helpers
-│       ├── ray_casting.py         # Revit ray-casting & floor/ceiling face detection
-│       ├── evaluation.py          # Height sampling, bucketing & formatting
-│       └── shapes.py              # DirectShape extrusion utilities for room volumes
-└── tests/
-    ├── conftest.py                # Pytest fixtures and Revit session configuration
-    ├── main_test.py               # Integration tests for main()
-    └── test_methods.py            # Unit and component tests
+├── __main__.py                    # Root CLI entry point (python .)
+└── src/
+    └── revit_clear_heights/
+        ├── __init__.py            # Package root, exports & __version__
+        ├── __main__.py            # CLI entry point (python -m revit_clear_heights)
+        ├── core.py                # Main workflow: calculate_clear_heights() & main()
+        ├── geometry.py            # Shapely polygon operations & 2D geometry helpers
+        ├── ray_casting.py         # Revit ray-casting & floor/ceiling face detection
+        └── evaluation.py          # Height sampling, bucketing & formatting
 ```
 
 ---
@@ -100,22 +93,6 @@ rch.calculate_clear_heights(
 
 ```bash
 python -m revit_clear_heights --debug --grid-min 0.5 --grid-max 1.5
-```
-
-### 3. Via `main.py`
-
-```bash
-python main.py
-```
-
-### 4. Create 3D DirectShapes from Clear Height Volumes
-
-Select rooms in Revit and execute:
-
-```python
-from revit_clear_heights import create_clear_height_shapes
-
-create_clear_height_shapes(debug=True, extrusion_height_m=2.1)
 ```
 
 ---
