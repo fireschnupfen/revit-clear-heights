@@ -12,6 +12,12 @@ try:
         ParameterFilterElement, ElementId
     )
     from System.Collections.Generic import List
+    
+    BOUNDARY_CATEGORIES = {
+        int(BuiltInCategory.OST_Walls),
+        int(BuiltInCategory.OST_GenericModel),
+        int(BuiltInCategory.OST_StructuralFraming)
+    }
 except ImportError:
     pass
 
@@ -100,33 +106,33 @@ def get_3d_view_by_name(doc, view_name):
 
 def get_closest_valid_ref(doc, refs, max_distance, require_upward_normal):
     """Find the closest hit on a room-bounding element with correct face normal and return its Reference."""
-    closest_dist = None
-    closest_ref = None
+    # Sort hits by proximity to evaluate the closest elements first
+    sorted_refs = sorted(refs, key=lambda r: r.Proximity)
 
-    for ref_with_context in refs:
+    for ref_with_context in sorted_refs:
+        proximity = ref_with_context.Proximity
+        if proximity > max_distance:
+            break
+
         ref = ref_with_context.GetReference()
         if not ref:
-            continue
-
-        proximity = ref_with_context.Proximity
-        if closest_dist is not None and proximity >= closest_dist:
-            continue
-        if proximity > max_distance:
             continue
 
         elem = doc.GetElement(ref.ElementId)
         if not elem:
             continue
             
-        # Debugging hook to check what elements are being evaluated
-        # print(f"Evaluating {elem.Category.Name if elem.Category else 'No Category'} ({elem.Id}) at dist {proximity}")
-
         param = elem.LookupParameter("Raumbegrenzung")
         # If the parameter exists and has an integer value, and it is explicitly set to 0 (unchecked), we skip this element.
         # This allows elements without the parameter (or where it returns None/invalid) to pass through.
         if param and param.HasValue and param.AsInteger() == 0:
-            # print(f"Rejected {elem.Id}: Room Bounding is unchecked")
             continue
+
+        # If the ray hits a boundary category first, it is swallowed.
+        # These hits do not define clear heights, so we stop evaluating this ray.
+        cat = elem.Category
+        if cat and cat.Id.Value in BOUNDARY_CATEGORIES:
+            return None
 
         try:
             face = elem.GetGeometryObjectFromReference(ref)
@@ -137,19 +143,16 @@ def get_closest_valid_ref(doc, refs, max_distance, require_upward_normal):
                 # Tolerance for normal checking (some elements might not be perfectly flat)
                 tolerance = 1e-6
                 if require_upward_normal and normal.Z <= tolerance:
-                    # print(f"Rejected {elem.Id}: Normal Z ({normal.Z}) is not upward")
                     continue
                 if not require_upward_normal and normal.Z >= -tolerance:
-                    # print(f"Rejected {elem.Id}: Normal Z ({normal.Z}) is not downward")
                     continue
+                
+                # All checks passed, return this closest valid reference
+                return ref
         except Exception as e:
-            # print(f"Exception getting geometry for {elem.Id}: {e}")
             pass
 
-        closest_dist = proximity
-        closest_ref = ref
-
-    return closest_ref
+    return None
 
 
 def auto_find_room_faces(doc, room, z_height, room_poly, grid_spacing, create_ray_lines=False, debug=False, ray_length_multiplicator=1.5, ray_casting_view_name="RAY_CASTING_VIEW"):
@@ -975,17 +978,18 @@ def main(debug=False, create_debug_lines=False, create_ray_lines=False, grid_spa
 if __name__ == "__main__":
     print("Hello world!")
 
-    main(clear_height_param_name="Rohe_Raumhöhe",
+    """main(clear_height_param_name="Rohe_Raumhöhe",
          # dominant_clear_height_param_name="Rohe_Raumhöhe_Bestimmend",
          ray_casting_view_name="Berechnung Rohe Raumhöhen", 
          lower_elevation_param_name="OK_RFB", 
          upper_elevation_param_name="UK_RD",
          ray_length_multiplicator=1.2,
-         debug=True)
+         debug=True)"""
     
     main(clear_height_param_name="Lichte_Raumhöhe", 
          # dominant_clear_height_param_name="Lichte_Raumhöhe_Bestimmend",
          ray_casting_view_name="Berechnung Lichte Raumhöhen", 
          lower_elevation_param_name="OK_FFB", 
          upper_elevation_param_name="UK_FD",
-         ray_length_multiplicator=1.0,)
+         ray_length_multiplicator=1.0,
+         debug=True)
